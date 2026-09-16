@@ -9,7 +9,7 @@ import type { LyricsResult, ServiceStatus, Track } from "../types";
  * Both fall back gracefully to a local demo catalogue when offline.
  * ------------------------------------------------------------------ */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:5001";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:5001" : "");
 const STREAM_BASE = import.meta.env.VITE_STREAM_BASE_URL ?? "http://localhost:5002";
 
 const timeout = (ms: number) => {
