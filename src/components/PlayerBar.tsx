@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  Loader2, MicVocal, Pause, Play, Repeat, Repeat1, Shuffle,
+  Loader2, MicVocal, Pause, Play, Radio, Repeat, Repeat1, Shuffle,
   SkipBack, SkipForward, Sparkles, Volume2, VolumeX,
 } from "lucide-react";
 import { usePlayer } from "../context/PlayerContext";
@@ -14,6 +14,7 @@ export default function PlayerBar() {
     current, isPlaying, isLoading, simulated, progress, duration,
     toggle, next, prev, seekTo, volume, setVolume,
     repeat, cycleRepeat, shuffle, toggleShuffle,
+    radio, radioLoading, toggleRadio,
     lyricsOpen, setLyricsOpen, aiOpen, setAiOpen,
   } = usePlayer();
 
@@ -46,8 +47,17 @@ export default function PlayerBar() {
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-paper">{current.title}</p>
                 <p className="truncate text-xs text-mist">{current.artist}</p>
-                <p className="mt-0.5 hidden font-mono text-[9px] uppercase tracking-[0.2em] text-mist/60 sm:block">
-                  {simulated ? "demo · simulated" : "live stream · m4a"}
+                <p
+                  className={cn(
+                    "mt-0.5 hidden font-mono text-[9px] uppercase tracking-[0.2em] sm:block",
+                    radioLoading ? "text-sage" : "text-mist/60"
+                  )}
+                >
+                  {radioLoading
+                    ? "radio · finding next song…"
+                    : simulated
+                      ? "demo · simulated"
+                      : "live stream · m4a"}
                 </p>
               </div>
               <Equalizer playing={isPlaying} className="ml-1 hidden h-4 sm:flex" />
@@ -122,6 +132,20 @@ export default function PlayerBar() {
 
             {/* right: panels + volume */}
             <div className="hidden items-center justify-end gap-1.5 lg:flex">
+              <button
+                onClick={toggleRadio}
+                className={cn(
+                  "grid h-9 w-9 place-items-center rounded-full transition-colors",
+                  radio ? "bg-sage/15 text-sage" : "text-mist hover:text-paper"
+                )}
+                title={
+                  radio
+                    ? "Autoplay is ON — keeps playing related songs when the queue ends"
+                    : "Autoplay is OFF — playback stops at the end of the queue"
+                }
+              >
+                {radioLoading ? <Loader2 size={16} className="animate-spin" /> : <Radio size={16} />}
+              </button>
               <button
                 onClick={() => setLyricsOpen(!lyricsOpen)}
                 className={cn(

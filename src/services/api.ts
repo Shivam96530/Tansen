@@ -1,4 +1,5 @@
 import { DEMO_TRACKS, DEMO_LYRICS } from "../data/demo";
+import { dedupeTracks, excludeHeard, songKey } from "../lib/dedupe";
 import type { LyricsResult, ServiceStatus, Track } from "../types";
 
 /* ------------------------------------------------------------------
@@ -67,7 +68,7 @@ export async function searchTracks(query: string): Promise<Track[]> {
     if (res.ok) {
       const data = await res.json();
       const list = (data.results ?? data).map(normalise).filter(Boolean) as Track[];
-      if (list.length) return list;
+      if (list.length) return dedupeTracks(list);
     }
   } catch {
     /* fall through */
@@ -81,7 +82,7 @@ export async function searchTracks(query: string): Promise<Track[]> {
     if (res.ok) {
       const data = await res.json();
       const list = (data.results ?? data).map(normalise).filter(Boolean) as Track[];
-      if (list.length) return list;
+      if (list.length) return dedupeTracks(list);
     }
   } catch {
     /* fall through */
@@ -93,6 +94,45 @@ export async function searchTracks(query: string): Promise<Track[]> {
     (t) => t.title.toLowerCase().includes(needle) || t.artist.toLowerCase().includes(needle)
   );
   return matches.length ? matches : DEMO_TRACKS.slice(0, 6);
+}
+
+/* ---------------- related tracks (radio) ----------------
+ * Fetches songs related to a seed track for autoplay radio.
+ * Uses multiple search queries and filters out already-heard songs. */
+
+export async function getRelatedTracks(
+  seed: Track,
+  heard: Set<string>,
+  count = 4
+): Promise<Track[]> {
+  const queries = [
+    `${seed.artist} popular songs`,
+    `songs similar to ${seed.title}`,
+    `${seed.artist} best hits`,
+  ];
+
+  const picked: Track[] = [];
+  const seenKeys = new Set<string>([songKey(seed)]);
+
+  for (const q of queries) {
+    if (picked.length >= count) break;
+    try {
+      const results = await searchTracks(q);
+      for (const t of results) {
+        const k = songKey(t);
+        if (!seenKeys.has(k) && !heard.has(k)) {
+          seenKeys.add(k);
+          picked.push(t);
+          if (picked.length >= count) break;
+        }
+      }
+    } catch {
+      /* skip failed query */
+    }
+  }
+
+  // Shuffle so radio doesn't always start with the same song
+  return picked.sort(() => Math.random() - 0.5);
 }
 
 /* ---------------- audio stream ----------------

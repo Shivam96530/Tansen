@@ -7,7 +7,7 @@ Audio search & direct-stream resolution via yt-dlp, lyrics via Genius.
 Endpoints
 ---------
 GET /health                        → service heartbeat
-GET /search?q=<query>              → `ytsearch5:` results (id, title, channel, thumb)
+GET /search?q=<query>&limit=<n>    → deduplicated results, up to 8 distinct songs (default)
 GET /get-audio-url/<video_id>      → direct .m4a stream URL (never downloads media)
 GET /lyrics?query=<query>          → cleaned lyrics text via lyricsgenius
 
@@ -65,6 +65,28 @@ def _pick_audio_url(info: dict) -> str | None:
     return info.get("url")
 
 
+_NOISE_WORDS = (
+    "official video", "official music video", "official audio", "official",
+    "full video song", "full video", "full song", "video song", "lyric video",
+    "lyrics video", "lyrics", "lyric", "audio", "video", "hd", "4k", "1080p",
+    "720p", "remastered", "slowed and reverb", "slowed", "reverb",
+    "bass boosted", "visualizer", "song", "songs",
+)
+
+
+def _song_key(title: str) -> str:
+    """Collapse an upload title to a song identity (dedupe re-uploads)."""
+    s = (title or "").lower()
+    s = re.sub(r"\([^)]*\)", " ", s)
+    s = re.sub(r"\[[^\]]*\]", " ", s)
+    s = s.split("|")[0]
+    s = re.sub(r"\b(feat|ft|featuring|with)\b.*$", " ", s)
+    for w in _NOISE_WORDS:
+        s = re.sub(rf"\b{re.escape(w)}\b", " ", s)
+    s = re.sub(r"[^0-9a-z\u0900-\u097F\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def _clean_lyrics(raw: str) -> str:
     """Strip lyricsgenius chrome (contributor headers, 'Embed' footers)."""
     text = raw
@@ -88,14 +110,21 @@ def search():
     if not query:
         return jsonify(error="Missing query param ?q="), 400
 
+    # Ask for a wider net, then collapse duplicate uploads of the same song so
+    # the client receives distinct tracks (not 5 copies of one hit).
+    limit = min(int(request.args.get("limit", 8) or 8), 15)
     try:
         with yt_dlp.YoutubeDL(SEARCH_OPTS) as ydl:
-            info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+            info = ydl.extract_info(f"ytsearch{limit * 2}:{query}", download=False)
 
-        results = []
-        for entry in (info.get("entries") or [])[:5]:
+        results, seen = [], set()
+        for entry in info.get("entries") or []:
             if not entry or not entry.get("id"):
                 continue
+            key = _song_key(entry.get("title") or "")
+            if key and key in seen:
+                continue
+            seen.add(key)
             results.append(
                 {
                     "id": entry["id"],
@@ -105,6 +134,8 @@ def search():
                     "duration": entry.get("duration") or 0,
                 }
             )
+            if len(results) >= limit:
+                break
         return jsonify(source="youtube", query=query, results=results)
     except Exception as exc:  # noqa: BLE001
         return jsonify(error="Search failed", detail=str(exc)), 502
@@ -167,7 +198,7 @@ def lyrics():
 
 if __name__ == "__main__":
     print(f"· Stream engine on http://localhost:{PORT}")
-    print("· GET /search?q=            → ytsearch5 results")
+    print("· GET /search?q=&limit=     → deduplicated results (default 8)")
     print("· GET /get-audio-url/<id>   → direct .m4a stream URL")
     print("· GET /lyrics?query=        → lyricsgenius text")
     app.run(host="0.0.0.0", port=PORT, debug=False)

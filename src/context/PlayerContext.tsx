@@ -8,7 +8,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { checkHealth, getAudioUrl, getLyrics, searchTracks } from "../services/api";
+import { checkHealth, getAudioUrl, getLyrics, getRelatedTracks, searchTracks } from "../services/api";
+import { dedupeTracks, isSameSong, songKey } from "../lib/dedupe";
 import type { LyricsResult, ServiceStatus, Track, ViewKey } from "../types";
 
 type RepeatMode = "off" | "all" | "one";
@@ -34,6 +35,9 @@ interface PlayerState {
   volume: number;
   repeat: RepeatMode;
   shuffle: boolean;
+  radio: boolean;
+  radioLoading: boolean;
+  toggleRadio: () => void;
 
   playTrack: (track: Track, queue?: Track[]) => void;
   toggle: () => void;
@@ -84,6 +88,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [volume, setVolumeState] = useState(0.85);
   const [repeat, setRepeat] = useState<RepeatMode>("off");
   const [shuffle, setShuffle] = useState(false);
+  const [radio, setRadio] = useState(true);
+  const [radioLoading, setRadioLoading] = useState(false);
 
   const [lyricsOpen, setLyricsOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
@@ -100,10 +106,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const shuffleRef = useRef(shuffle);
   const queueRef = useRef(queue);
   const idxRef = useRef(queueIndex);
+  const radioRef = useRef(radio);
+  const heardRef = useRef<Set<string>>(new Set()); // song identities played this session
+  const radioBusy = useRef(false);
   repeatRef.current = repeat;
   shuffleRef.current = shuffle;
   queueRef.current = queue;
   idxRef.current = queueIndex;
+  radioRef.current = radio;
   keepPlaying.current = isPlaying;
 
   /* ---- audio element ---- */
@@ -174,6 +184,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const loadAndPlay = useCallback(
     async (track: Track) => {
       const id = ++loadId.current;
+      heardRef.current.add(songKey(track)); // remember the song, not the upload
       setCurrent(track);
       setIsLoading(true);
       setLyrics(null);
@@ -224,9 +235,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const playTrack = useCallback(
     (track: Track, list?: Track[]) => {
       if (list && list.length) {
-        setQueue(list);
-        const i = list.findIndex((t) => t.id === track.id);
-        setQueueIndex(i >= 0 ? i : 0);
+        // Collapse duplicate uploads so "next" is never the same song again,
+        // but always keep the track the listener actually clicked.
+        const clean = dedupeTracks([track, ...list.filter((t) => t.id !== track.id)]);
+        const ordered = [track, ...clean.filter((t) => t.id !== track.id)];
+        setQueue(ordered);
+        queueRef.current = ordered;
+        setQueueIndex(0);
       } else {
         setQueue((q) => {
           if (q.some((t) => t.id === track.id)) return q;
@@ -251,19 +266,65 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [loadAndPlay]
   );
 
+  /** Next index whose song differs from what is playing (skips re-uploads). */
+  const nextDistinctIndex = useCallback((from: number) => {
+    const q = queueRef.current;
+    const now = q[idxRef.current] ?? null;
+    for (let i = from; i < q.length; i++) {
+      if (!isSameSong(q[i], now)) return i;
+    }
+    return -1;
+  }, []);
+
+  /** Extend the queue with related songs, Spotify-style autoplay radio. */
+  const extendWithRadio = useCallback(async () => {
+    const seed = queueRef.current[idxRef.current] ?? null;
+    if (!seed || radioBusy.current) return false;
+    radioBusy.current = true;
+    setRadioLoading(true);
+    try {
+      const picks = await getRelatedTracks(seed, heardRef.current, 4);
+      if (!picks.length) return false;
+      const merged = [...queueRef.current, ...picks];
+      queueRef.current = merged;
+      setQueue(merged);
+      const target = merged.length - picks.length;
+      setQueueIndex(target);
+      idxRef.current = target;
+      loadAndPlay(picks[0]);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      radioBusy.current = false;
+      setRadioLoading(false);
+    }
+  }, [loadAndPlay]);
+
   const next = useCallback(() => {
     const q = queueRef.current;
     if (!q.length) return;
     if (shuffleRef.current && q.length > 1) {
-      let r = idxRef.current;
-      while (r === idxRef.current) r = Math.floor(Math.random() * q.length);
-      stepTo(r);
+      const options = q
+        .map((_, i) => i)
+        .filter((i) => i !== idxRef.current && !isSameSong(q[i], q[idxRef.current]));
+      if (options.length) {
+        stepTo(options[Math.floor(Math.random() * options.length)]);
+        return;
+      }
+    }
+    const n = nextDistinctIndex(idxRef.current + 1);
+    if (n !== -1) {
+      stepTo(n);
       return;
     }
-    const n = idxRef.current + 1;
-    if (n < q.length) stepTo(n);
-    else if (repeatRef.current === "all") stepTo(0);
-  }, [stepTo]);
+    if (repeatRef.current === "all") {
+      stepTo(0);
+      return;
+    }
+    // Queue exhausted → radio takes over with fresh songs.
+    if (radioRef.current) void extendWithRadio();
+  }, [stepTo, nextDistinctIndex, extendWithRadio]);
 
   const prev = useCallback(() => {
     if (progress > 4) {
@@ -286,18 +347,26 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       return;
     }
     const q = queueRef.current;
-    const n = idxRef.current + 1;
-    if (shuffleRef.current && q.length > 1) {
-      next();
-    } else if (n < q.length) {
+    const hasNext = shuffleRef.current
+      ? q.length > 1
+      : nextDistinctIndex(idxRef.current + 1) !== -1;
+    if (hasNext) {
       next();
     } else if (repeatRef.current === "all" && q.length) {
       stepTo(0);
+    } else if (radioRef.current) {
+      // Nothing distinct left — pull related songs and keep the music going.
+      void extendWithRadio().then((ok) => {
+        if (!ok) {
+          setIsPlaying(false);
+          setProgress(durationRef.current);
+        }
+      });
     } else {
       setIsPlaying(false);
       setProgress(durationRef.current);
     }
-  }, [next, simulated, stepTo]);
+  }, [next, simulated, stepTo, nextDistinctIndex, extendWithRadio]);
 
   const seekTo = useCallback(
     (sec: number) => {
@@ -341,6 +410,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     []
   );
   const toggleShuffle = useCallback(() => setShuffle((s) => !s), []);
+  const toggleRadio = useCallback(() => setRadio((r) => !r), []);
 
   const enqueue = useCallback((t: Track) => {
     setQueue((q) => (q.some((x) => x.id === t.id) ? q : [...q, t]));
@@ -385,7 +455,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     () => ({
       view, setView, query, search, results, searching,
       queue, queueIndex, current, isPlaying, isLoading, simulated,
-      progress, duration, volume, repeat, shuffle,
+      progress, duration, volume, repeat, shuffle, radio, radioLoading, toggleRadio,
       playTrack, toggle, next, prev, seekTo, setVolume, cycleRepeat, toggleShuffle, enqueue,
       lyricsOpen, setLyricsOpen, aiOpen, setAiOpen,
       lyrics, lyricsLoading, status,
@@ -393,7 +463,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [
       view, query, search, results, searching,
       queue, queueIndex, current, isPlaying, isLoading, simulated,
-      progress, duration, volume, repeat, shuffle,
+      progress, duration, volume, repeat, shuffle, radio, radioLoading, toggleRadio,
       playTrack, toggle, next, prev, seekTo, setVolume, cycleRepeat, toggleShuffle, enqueue,
       lyricsOpen, aiOpen, lyrics, lyricsLoading, status,
     ]
