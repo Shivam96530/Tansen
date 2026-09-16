@@ -1,5 +1,5 @@
 import { DEMO_TRACKS, DEMO_LYRICS } from "../data/demo";
-import { dedupeTracks, excludeHeard, songKey } from "../lib/dedupe";
+import { dedupeTracks, songKey } from "../lib/dedupe";
 import type { LyricsResult, ServiceStatus, Track } from "../types";
 
 /* ------------------------------------------------------------------
