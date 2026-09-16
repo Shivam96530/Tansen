@@ -22,7 +22,7 @@ services:
         fromService:
           type: web
           name: tansen-python-engine
-          property: hostpath
+          property: host
 
   # 3. React Frontend (Static Site)
   - type: web
@@ -39,9 +39,9 @@ services:
         fromService:
           type: web
           name: tansen-express-api
-          property: hostpath
+          property: host
       - key: VITE_STREAM_BASE_URL
         fromService:
           type: web
           name: tansen-python-engine
-          property: hostpath
+          property: host
