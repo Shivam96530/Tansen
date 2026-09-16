@@ -1,0 +1,42 @@
+services:
+  # 1. Python Stream Engine (Flask)
+  - type: web
+    name: tansen-python-engine
+    env: python
+    rootDir: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python audio_service.py
+    envVars:
+      - key: PORT
+        value: 5002
+
+  # 2. Express API Bridge
+  - type: web
+    name: tansen-express-api
+    env: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: STREAM_BASE_URL
+        fromService:
+          type: web
+          name: tansen-python-engine
+          property: hostpath
+
+  # 3. React Frontend (Static Site)
+  - type: static
+    name: tansen-frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        fromService:
+          type: web
+          name: tansen-express-api
+          property: hostpath
+      - key: VITE_STREAM_BASE_URL
+        fromService:
+          type: web
+          name: tansen-python-engine
+          property: hostpath
