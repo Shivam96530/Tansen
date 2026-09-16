@@ -3,6 +3,7 @@ services:
   - type: web
     name: tansen-python-engine
     runtime: python
+    plan: free
     rootDir: python
     buildCommand: pip install -r requirements.txt
     startCommand: python audio_service.py
@@ -14,6 +15,7 @@ services:
   - type: web
     name: tansen-express-api
     runtime: node
+    plan: free
     rootDir: server
     buildCommand: npm install
     startCommand: npm start
@@ -28,6 +30,7 @@ services:
   - type: web
     name: tansen-frontend
     runtime: static
+    plan: free
     buildCommand: npm install && npm run build
     staticPublishPath: ./dist
     routes:
