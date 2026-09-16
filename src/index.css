@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0a0a0c;
+  --color-coal: #121215;
+  --color-seam: #1c1c21;
+  --color-mist: #8b8b96;
+  --color-paper: #f2efe6;
+  --color-brass: #f0a832;
+  --color-brass-deep: #c07f14;
+  --color-iris: #9b8cff;
+  --color-rose: #ff6b8b;
+  --color-sage: #5fd9a4;
+
+  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --animate-spin-slow: spin 14s linear infinite;
+  --animate-eq-1: eq 0.9s ease-in-out infinite;
+  --animate-eq-2: eq 0.7s ease-in-out 0.15s infinite;
+  --animate-eq-3: eq 1.05s ease-in-out 0.3s infinite;
+  --animate-eq-4: eq 0.8s ease-in-out 0.45s infinite;
+  --animate-marquee: marquee 14s linear infinite;
+  --animate-shimmer: shimmer 1.8s linear infinite;
+  --animate-pulse-soft: pulseSoft 2.6s ease-in-out infinite;
+
+  @keyframes eq {
+    0%, 100% { transform: scaleY(0.25); }
+    50% { transform: scaleY(1); }
+  }
+  @keyframes marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+  @keyframes shimmer {
+    from { background-position: -400px 0; }
+    to { background-position: 400px 0; }
+  }
+  @keyframes pulseSoft {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-brass) 70%, transparent);
+  color: #14100a;
+}
+
+/* ------- scrollbars ------- */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #26262c;
+  border-radius: 99px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #34343c;
+}
+
+/* ------- grain overlay ------- */
+.grain::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ------- range input ------- */
+input[type="range"].fader {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 99px;
+  outline: none;
+  cursor: pointer;
+  background:
+    linear-gradient(var(--color-brass), var(--color-brass)) 0 / var(--fill, 50%) 100% no-repeat,
+    #26262c;
+}
+input[type="range"].fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--color-paper);
+  border: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+}
+.fader-wrap:hover input[type="range"].fader::-webkit-slider-thumb,
+input[type="range"].fader:active::-webkit-slider-thumb {
+  opacity: 1;
+}
+input[type="range"].fader::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--color-paper);
+  border: none;
+}
+
+/* ------- text helpers ------- */
+.text-balance {
+  text-wrap: balance;
+}
+.shimmer {
+  background: linear-gradient(90deg, #17171b 25%, #22222a 50%, #17171b 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.8s linear infinite;
+}
+.mask-fade-b {
+  mask-image: linear-gradient(to bottom, black 78%, transparent 100%);
+}

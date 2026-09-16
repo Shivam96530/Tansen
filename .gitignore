@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+server/node_modules/
+
+# env
+.env
+.env.local
+.env.*.local
+server/.env
+python/.env
+
+# build
+dist/
+
+# python
+__pycache__/
+.venv/
+*.pyc
+
+# misc
+.DS_Store
+*.log
