@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Music2 } from "lucide-react";
 import { cn } from "../utils/cn";
 import type { Track } from "../types";
@@ -38,20 +38,26 @@ export default function Artwork({
   const [c1, c2] = PALETTES[h % PALETTES.length];
   const angle = (h % 360) + "deg";
 
+  /* YouTube thumbnails can 404 (deleted/private videos) — swap to the
+     generative gradient cover when the image fails to load. */
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [track?.id, track?.thumbnail]);
+
+  const showImage = !!track?.thumbnail && !broken;
+
   return (
     <div
       className={cn("relative shrink-0 overflow-hidden bg-seam", rounding, className)}
       style={{ width: size, height: size }}
     >
-      {track?.thumbnail ? (
+      {showImage ? (
         <img
-          src={track.thumbnail}
-          alt={track.title}
+          src={track!.thumbnail!}
+          alt={track!.title}
           className="h-full w-full object-cover"
           loading="lazy"
-          onError={(e) => {
-            (e.target as HTMLImageElement).style.display = "none";
-          }}
+          referrerPolicy="no-referrer"
+          onError={() => setBroken(true)}
         />
       ) : (
         <>

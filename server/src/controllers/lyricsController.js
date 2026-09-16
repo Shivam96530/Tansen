@@ -45,7 +45,9 @@ export async function getLyrics(req, res) {
     });
 
     const hit = searchRes.data?.response?.hits?.[0]?.result;
-    if (!hit) return res.status(404).json({ error: "No Genius match found." });
+    // "No match" is an expected outcome, not an HTTP error —
+    // answer 200 with an empty payload so consoles stay clean.
+    if (!hit) return res.json({ lyrics: "", note: "no-match", query: q });
 
     // Step 2: fetch full song data from the API (has lyrics_state and description)
     const songRes = await axios.get(`${GENIUS_API}/songs/${hit.id}`, {
@@ -55,7 +57,7 @@ export async function getLyrics(req, res) {
     });
 
     const song = songRes.data?.response?.song;
-    if (!song) return res.status(404).json({ error: "Song details not found." });
+    if (!song) return res.json({ lyrics: "", note: "no-match", query: q });
 
     // Step 3: Use the Python stream engine's lyricsgenius as fallback if available
     const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
@@ -73,7 +75,7 @@ export async function getLyrics(req, res) {
     }
 
     if (!lyrics) {
-      return res.status(404).json({ error: "Lyrics not available for this song." });
+      return res.json({ lyrics: "", note: "no-lyrics-available", title: song.title, artist: song.primary_artist?.name });
     }
 
     return res.json({

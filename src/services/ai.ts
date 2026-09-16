@@ -10,9 +10,37 @@ import type { MoodKey, Track } from "../types";
  * ------------------------------------------------------------------ */
 
 const HF_KEY = import.meta.env.VITE_HUGGING_FACE_API_KEY ?? "";
-const HF_BASE = "https://api-inference.huggingface.co/models";
+/* The classic api-inference host is deprecated (returns 404/410) —
+   models are served through the HF router. */
+const HF_BASE = "https://router.huggingface.co/hf-inference/models";
 const SENTIMENT_MODEL = "distilbert-base-uncased-finetuned-sst-2-english";
 const GEN_MODEL = "gpt2";
+
+/** POST to HF; retries once if the model is cold-starting (503 loading). */
+async function hfPost(model: string, payload: unknown): Promise<Response | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(`${HF_BASE}/${model}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HF_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (res.status === 503) {
+        const body = await res.json().catch(() => ({}));
+        const wait = Math.min((body?.estimated_time ?? 10) * 1000, 20000);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      return res.ok ? res : null; // 401 bad key · 404 no model → use local engine
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 const MOOD_KEYWORDS: Record<MoodKey, string[]> = {
   happy: ["happy", "joy", "great", "awesome", "excited", "good", "amazing", "wonderful", "glad", "cheerful", "delighted", "grateful", "love", "sunny"],
@@ -39,13 +67,9 @@ function localMoodDetect(text: string): MoodKey {
 
 async function hfSentiment(text: string): Promise<"POSITIVE" | "NEGATIVE" | null> {
   if (!HF_KEY) return null;
+  const res = await hfPost(SENTIMENT_MODEL, { inputs: text });
+  if (!res) return null;
   try {
-    const res = await fetch(`${HF_BASE}/${SENTIMENT_MODEL}`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${HF_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ inputs: text }),
-    });
-    if (!res.ok) return null;
     const data = await res.json();
     const scores = Array.isArray(data) ? (Array.isArray(data[0]) ? data[0] : data) : [];
     const top = scores.sort((a: any, b: any) => b.score - a.score)[0];
@@ -57,16 +81,12 @@ async function hfSentiment(text: string): Promise<"POSITIVE" | "NEGATIVE" | null
 
 async function hfGenerateLine(prompt: string): Promise<string | null> {
   if (!HF_KEY) return null;
+  const res = await hfPost(GEN_MODEL, {
+    inputs: prompt,
+    parameters: { max_new_tokens: 24, temperature: 0.9, top_p: 0.92, return_full_text: false },
+  });
+  if (!res) return null;
   try {
-    const res = await fetch(`${HF_BASE}/${GEN_MODEL}`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${HF_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        inputs: prompt,
-        parameters: { max_new_tokens: 24, temperature: 0.9, top_p: 0.92, return_full_text: false },
-      }),
-    });
-    if (!res.ok) return null;
     const data = await res.json();
     const text = data?.[0]?.generated_text?.trim();
     return text ? text.split("\n")[0].slice(0, 140) : null;

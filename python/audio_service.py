@@ -151,7 +151,9 @@ def get_audio_url(video_id: str):
 
         audio_url = _pick_audio_url(info)
         if not audio_url:
-            return jsonify(error="No audio stream found"), 404
+            # Expected case (restricted video) — empty 200 keeps consoles clean;
+            # the client falls back gracefully.
+            return jsonify(id=video_id, audio_url=None, note="no-stream")
 
         return jsonify(
             id=video_id,
@@ -185,7 +187,7 @@ def lyrics():
         genius.verbose = False
         song = genius.search_song(query)
         if not song:
-            return jsonify(error="No lyrics found."), 404
+            return jsonify(title=None, artist=None, lyrics="", note="no-match")
 
         return jsonify(
             title=song.title,
