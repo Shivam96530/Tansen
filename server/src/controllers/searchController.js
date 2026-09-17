@@ -76,12 +76,12 @@ export async function getAudioStream(req, res) {
   try {
     const { data } = await axios.get(
       `${STREAM_BASE}/get-audio-url/${encodeURIComponent(videoId)}`,
-      { timeout: 20000 }
+      { timeout: 15000 }
     );
     return res.json(data);
   } catch (err) {
-    return res
-      .status(502)
-      .json({ error: "Audio stream resolution failed", detail: String(err?.message || err) });
+    // Return a clean 200 with audio_url: null so the frontend can seamlessly
+    // use the browser YouTube Player without red 502 Bad Gateway errors.
+    return res.json({ id: videoId, audio_url: null, note: "stream-unavailable" });
   }
 }

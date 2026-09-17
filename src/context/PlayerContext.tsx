@@ -112,6 +112,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const ytPlayerRef = useRef<any>(null);
   const ytReadyRef = useRef(false);
+  const pendingTrackIdRef = useRef<string | null>(null);
 
   const loadId = useRef(0);
   const lyricsCache = useRef(new Map<string, LyricsResult>());
@@ -136,8 +137,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (window.YT && window.YT.Player && !ytPlayerRef.current) {
         try {
           ytPlayerRef.current = new window.YT.Player("tansen-yt-player", {
-            height: "1",
-            width: "1",
+            height: "240",
+            width: "240",
             playerVars: {
               autoplay: 1,
               controls: 0,
@@ -146,15 +147,33 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               modestbranding: 1,
               playsinline: 1,
               rel: 0,
+              enablejsapi: 1,
+              origin: typeof window !== "undefined" ? window.location.origin : "",
             },
             events: {
               onReady: () => {
                 ytReadyRef.current = true;
-                if (ytPlayerRef.current) {
+                const p = ytPlayerRef.current;
+                if (p) {
                   try {
-                    ytPlayerRef.current.setVolume(Math.round(volume * 100));
+                    p.unMute();
+                    p.setVolume(Math.round(volume * 100));
                   } catch {
                     /* ignore */
+                  }
+                  if (pendingTrackIdRef.current) {
+                    const tid = pendingTrackIdRef.current;
+                    pendingTrackIdRef.current = null;
+                    try {
+                      p.loadVideoById(tid);
+                      p.unMute();
+                      p.setVolume(Math.round(volume * 100));
+                      p.playVideo();
+                      setIsLoading(false);
+                      setIsPlaying(true);
+                    } catch {
+                      /* ignore */
+                    }
                   }
                 }
               },
@@ -164,6 +183,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                   setIsPlaying(true);
                   setIsLoading(false);
                   try {
+                    ytPlayerRef.current?.unMute?.();
                     const dur = ytPlayerRef.current?.getDuration?.();
                     if (dur && isFinite(dur) && dur > 0) setDuration(dur);
                   } catch {
@@ -356,6 +376,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             if (p && typeof p.loadVideoById === "function") {
               try {
                 p.loadVideoById(track.id);
+                p.unMute();
                 p.setVolume(Math.round(volume * 100));
                 p.playVideo();
                 setIsLoading(false);
@@ -365,6 +386,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                 return false;
               }
             }
+            pendingTrackIdRef.current = track.id;
             return false;
           };
 
