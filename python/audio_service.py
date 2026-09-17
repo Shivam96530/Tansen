@@ -28,22 +28,108 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 app = Flask(__name__)
 CORS(app)
 
+import base64
+
 PORT = int(os.environ.get("PORT", 5002))
 
 # ── YouTube cookie support ───────────────────────────────────────────────────
 # On cloud servers YouTube requires authentication via cookies.
-# Set the YOUTUBE_COOKIES env var (contents of a cookies.txt Netscape file)
-# on Render to bypass the "Sign in to confirm you're not a bot" block.
-_COOKIE_FILE: str | None = None
+# We support:
+# 1. Local python/cookies.txt file
+# 2. YOUTUBE_COOKIES environment variable (raw Netscape or base64-encoded)
+#
+# Pasting multiline text in web dashboards often mangles tabs to spaces or
+# escapes newlines as literal \n. This parser normalizes everything into a
+# valid Netscape 7-column tab-separated file.
 
-_raw_cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
-if _raw_cookies:
-    _tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False, encoding="utf-8"
-    )
-    _tmp.write(_raw_cookies)
-    _tmp.close()
-    _COOKIE_FILE = _tmp.name
+def _init_cookie_file() -> tuple[str | None, dict]:
+    info = {"configured": False, "source": None, "lines": 0, "valid_cookies": 0, "bytes": 0}
+    raw = ""
+
+    local_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+    if os.path.isfile(local_path) and os.path.getsize(local_path) > 0:
+        try:
+            with open(local_path, "r", encoding="utf-8", errors="ignore") as f:
+                raw = f.read()
+            info["source"] = "local_file"
+        except Exception:
+            pass
+
+    if not raw:
+        env_val = os.environ.get("YOUTUBE_COOKIES", "").strip()
+        if env_val:
+            # Check if base64 encoded
+            try:
+                decoded = base64.b64decode(env_val).decode("utf-8", errors="ignore")
+                if "youtube.com" in decoded:
+                    raw = decoded
+                    info["source"] = "env_base64"
+            except Exception:
+                pass
+
+            if not raw:
+                raw = env_val
+                info["source"] = "env_raw"
+
+    if not raw:
+        return None, info
+
+    # Strip wrapping quotes
+    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+        raw = raw[1:-1].strip()
+
+    # Unescape literal \r\n and \n if Render passed escaped newlines
+    if "\\n" in raw:
+        raw = raw.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+
+    sanitized_lines = []
+    has_header = False
+    valid_count = 0
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            if "Netscape" in line:
+                has_header = True
+            sanitized_lines.append(line)
+            continue
+
+        # Split on any whitespace sequence (converts spaces back to tabs)
+        parts = re.split(r"\s+", line)
+        if len(parts) >= 7:
+            domain, flag, path, secure, expiry, name = parts[:6]
+            val = " ".join(parts[6:])
+            sanitized_lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{val}")
+            valid_count += 1
+        elif "\t" in line:
+            sanitized_lines.append(line)
+            valid_count += 1
+        else:
+            sanitized_lines.append(line)
+
+    if not has_header:
+        sanitized_lines.insert(0, "# Netscape HTTP Cookie File")
+
+    final_content = "\n".join(sanitized_lines) + "\n"
+
+    try:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(final_content)
+        tmp.close()
+        info["configured"] = True
+        info["lines"] = len(sanitized_lines)
+        info["valid_cookies"] = valid_count
+        info["bytes"] = len(final_content.encode("utf-8"))
+        info["path"] = tmp.name
+        return tmp.name, info
+    except Exception as e:
+        info["error"] = str(e)
+        return None, info
+
+
+_COOKIE_FILE, _COOKIE_INFO = _init_cookie_file()
 
 def _cookie_opts() -> dict:
     """Return cookiefile option dict if cookies are configured."""
@@ -56,19 +142,6 @@ SEARCH_OPTS = {
     "extract_flat": True,
     "noplaylist": True,
     "skip_download": True,
-    # Use Android + iOS + Web — prevents SABR-only format missing URL errors
-    "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
-    **_cookie_opts(),
-}
-
-STREAM_OPTS = {
-    "quiet": True,
-    "no_warnings": True,
-    "noplaylist": True,
-    "skip_download": True,
-    # Accept any audio format or muxed format (e.g. format 18)
-    "format": "bestaudio/best",
-    # Android client returns direct HTTPS stream URLs even under YouTube SABR experiments
     "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
     **_cookie_opts(),
 }
@@ -132,7 +205,12 @@ def _clean_lyrics(raw: str) -> str:
 
 @app.get("/health")
 def health():
-    return jsonify(status="ok", service="stream-engine", port=PORT)
+    return jsonify(
+        status="ok",
+        service="stream-engine",
+        port=PORT,
+        cookies=_COOKIE_INFO,
+    )
 
 
 @app.get("/search")
@@ -175,25 +253,68 @@ def search():
 @app.get("/get-audio-url/<video_id>")
 def get_audio_url(video_id: str):
     """Resolve a YouTube video id to its direct audio stream URL (.m4a)."""
-    try:
-        page_url = f"https://www.youtube.com/watch?v={video_id}"
-        with yt_dlp.YoutubeDL(STREAM_OPTS) as ydl:
-            info = ydl.extract_info(page_url, download=False)
+    page_url = f"https://www.youtube.com/watch?v={video_id}"
 
-        audio_url = _pick_audio_url(info)
-        if not audio_url:
-            # Expected case (restricted video) — empty 200 keeps consoles clean;
-            # the client falls back gracefully.
-            return jsonify(id=video_id, audio_url=None, note="no-stream")
+    # Multi-strategy extraction with automatic fallback
+    strategies = [
+        # Strategy 1: Default yt-dlp client chain with cookies (web with cookies)
+        {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "format": "bestaudio/best",
+            **_cookie_opts(),
+        },
+        # Strategy 2: Android + Web client fallback
+        {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "format": "bestaudio/best",
+            "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            **_cookie_opts(),
+        },
+        # Strategy 3: Web-only
+        {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "format": "bestaudio/best",
+            "extractor_args": {"youtube": {"player_client": ["web"]}},
+            **_cookie_opts(),
+        },
+    ]
 
+    last_exc = None
+    for opts in strategies:
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(page_url, download=False)
+            if not info:
+                continue
+            audio_url = _pick_audio_url(info)
+            if audio_url:
+                return jsonify(
+                    id=video_id,
+                    title=info.get("title"),
+                    duration=info.get("duration") or 0,
+                    audio_url=audio_url,
+                )
+        except Exception as exc:
+            last_exc = exc
+            continue
+
+    if last_exc:
         return jsonify(
-            id=video_id,
-            title=info.get("title"),
-            duration=info.get("duration") or 0,
-            audio_url=audio_url,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return jsonify(error="Stream resolution failed", detail=str(exc)), 502
+            error="Stream resolution failed",
+            detail=str(last_exc),
+            cookie_status=_COOKIE_INFO,
+        ), 502
+
+    return jsonify(id=video_id, audio_url=None, note="no-stream")
 
 
 @app.get("/lyrics")

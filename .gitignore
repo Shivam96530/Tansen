@@ -20,3 +20,4 @@ __pycache__/
 # misc
 .DS_Store
 *.log
+*cookies.txt
