@@ -10,7 +10,8 @@ import type { LyricsResult, ServiceStatus, Track } from "../types";
  * ------------------------------------------------------------------ */
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:5001" : "");
-const STREAM_BASE = import.meta.env.VITE_STREAM_BASE_URL ?? "http://localhost:5002";
+// In production, never call localhost:5002 — Express proxies stream requests via STREAM_BASE_URL env var.
+const STREAM_BASE = import.meta.env.VITE_STREAM_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:5002" : "");
 
 const timeout = (ms: number) => {
   const ctrl = new AbortController();
@@ -31,9 +32,11 @@ export async function checkHealth(): Promise<ServiceStatus> {
       return "offline";
     }
   };
+  // Proxy the stream health check through Express (/api/stream-health)
+  // so the browser never tries to contact localhost:5002 on deployed sites.
   const [api, stream] = await Promise.all([
     ping(`${API_BASE}/health`),
-    ping(`${STREAM_BASE}/health`),
+    ping(`${API_BASE}/api/stream-health`),
   ]);
   return { api, stream };
 }

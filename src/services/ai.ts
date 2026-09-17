@@ -10,17 +10,18 @@ import type { MoodKey, Track } from "../types";
  * ------------------------------------------------------------------ */
 
 const HF_KEY = import.meta.env.VITE_HUGGING_FACE_API_KEY ?? "";
-/* The classic api-inference host is deprecated (returns 404/410) —
-   models are served through the HF router. */
-const HF_BASE = "https://router.huggingface.co/hf-inference/models";
+/* Use the HF Inference API with task-specific endpoints.
+   The /models/<name> path returns 400 on the router — use provider=hf-inference. */
+const HF_INFERENCE_BASE = "https://api-inference.huggingface.co/models";
 const SENTIMENT_MODEL = "distilbert-base-uncased-finetuned-sst-2-english";
-const GEN_MODEL = "gpt2";
+const GEN_MODEL = "openai-community/gpt2";
 
-/** POST to HF; retries once if the model is cold-starting (503 loading). */
+/** POST to HF Inference API; retries once if the model is cold-starting (503 loading). */
 async function hfPost(model: string, payload: unknown): Promise<Response | null> {
+  if (!HF_KEY) return null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await fetch(`${HF_BASE}/${model}`, {
+      const res = await fetch(`${HF_INFERENCE_BASE}/${model}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${HF_KEY}`,
@@ -34,7 +35,7 @@ async function hfPost(model: string, payload: unknown): Promise<Response | null>
         await new Promise((r) => setTimeout(r, wait));
         continue;
       }
-      return res.ok ? res : null; // 401 bad key · 404 no model → use local engine
+      return res.ok ? res : null;
     } catch {
       return null;
     }
