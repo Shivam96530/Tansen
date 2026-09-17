@@ -16,6 +16,7 @@ Port: 5002
 
 import os
 import re
+import tempfile
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -29,12 +30,33 @@ CORS(app)
 
 PORT = int(os.environ.get("PORT", 5002))
 
+# ── YouTube cookie support ───────────────────────────────────────────────────
+# On cloud servers YouTube requires authentication via cookies.
+# Set the YOUTUBE_COOKIES env var (contents of a cookies.txt Netscape file)
+# on Render to bypass the "Sign in to confirm you're not a bot" block.
+_COOKIE_FILE: str | None = None
+
+_raw_cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
+if _raw_cookies:
+    _tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, encoding="utf-8"
+    )
+    _tmp.write(_raw_cookies)
+    _tmp.close()
+    _COOKIE_FILE = _tmp.name
+
+def _cookie_opts() -> dict:
+    """Return cookiefile option dict if cookies are configured."""
+    return {"cookiefile": _COOKIE_FILE} if _COOKIE_FILE else {}
+# ────────────────────────────────────────────────────────────────────────────
+
 SEARCH_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "extract_flat": True,
     "noplaylist": True,
     "skip_download": True,
+    **_cookie_opts(),
 }
 
 STREAM_OPTS = {
@@ -44,7 +66,9 @@ STREAM_OPTS = {
     "skip_download": True,
     # Prefer native audio-only m4a; fall back to any audio-only format.
     "format": "bestaudio[ext=m4a]/bestaudio/best",
+    **_cookie_opts(),
 }
+
 
 
 # ---------------------------------------------------------------- helpers
