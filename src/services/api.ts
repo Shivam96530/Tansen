@@ -190,14 +190,17 @@ export async function getLyrics(track: Track): Promise<LyricsResult> {
   if (track.source === "demo") {
     return { lyrics: DEMO_LYRICS[track.id] ?? DEMO_LYRICS.default, title: track.title, artist: track.artist };
   }
-  const q = `${track.title} ${track.artist}`.trim();
   try {
     const t = timeout(12000);
-    const res = await fetch(`${API_BASE}/api/lyrics?q=${encodeURIComponent(q)}`, { signal: t.signal });
+    const queryParams = new URLSearchParams({
+      q: track.title,
+      artist: track.artist || "",
+    });
+    const res = await fetch(`${API_BASE}/api/lyrics?${queryParams.toString()}`, { signal: t.signal });
     t.done();
     if (res.ok) {
       const data = await res.json();
-      if (data.lyrics) return { lyrics: data.lyrics, title: data.title, artist: data.artist };
+      if (data.lyrics) return { lyrics: data.lyrics, title: data.title || track.title, artist: data.artist || track.artist };
     }
   } catch {
     /* fall through */

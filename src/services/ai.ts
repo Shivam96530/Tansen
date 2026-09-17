@@ -3,15 +3,43 @@ import { searchTracks } from "./api";
 import type { MoodKey, Track } from "../types";
 
 /* ------------------------------------------------------------------
- * Hugging Face Inference API
- * Uses the modern router endpoint with Llama 3.1 8B Instruct.
- * Falls back to local keyword engine if key is absent or offline.
+ * Hugging Face Inference API — the same models as the original app:
+ *   sentiment : distilbert-base-uncased-finetuned-sst-2-english
+ *   generation: gpt2
+ * A local keyword engine provides the same behaviour offline.
  * ------------------------------------------------------------------ */
 
 const HF_KEY = (import.meta.env.VITE_HUGGING_FACE_API_KEY ?? "").trim();
+const HF_INFERENCE_BASE = "https://router.huggingface.co/hf-inference/models";
+const SENTIMENT_MODEL = "distilbert-base-uncased-finetuned-sst-2-english";
+const GEN_MODEL = "openai-community/gpt2";
 
-const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
-const HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct";
+/** POST to HF Inference API; retries once if the model is cold-starting (503 loading). */
+async function hfPost(model: string, payload: unknown): Promise<Response | null> {
+  if (!HF_KEY || HF_KEY.length < 8) return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(`${HF_INFERENCE_BASE}/${model}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HF_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      if (res.status === 503) {
+        const body = await res.json().catch(() => ({}));
+        const wait = Math.min((body?.estimated_time ?? 10) * 1000, 20000);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      return res.ok ? res : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 const MOOD_KEYWORDS: Record<MoodKey, string[]> = {
   happy: ["happy", "joy", "great", "awesome", "excited", "good", "amazing", "wonderful", "glad", "cheerful", "delighted", "grateful", "love", "sunny"],
@@ -36,60 +64,34 @@ function localMoodDetect(text: string): MoodKey {
   return bestScore === 0 ? "calm" : best;
 }
 
-const VALID_MOODS: Set<string> = new Set(["happy", "sad", "romantic", "energetic", "calm", "focus"]);
-
-/**
- * Call Hugging Face modern chat completions to analyze mood & get personalized insight.
- */
-async function hfAnalyze(text: string): Promise<{ mood: MoodKey; sentiment: "POSITIVE" | "NEGATIVE"; vibe: string } | null> {
-  if (!HF_KEY || HF_KEY.length < 8) return null;
-
+async function hfSentiment(text: string): Promise<"POSITIVE" | "NEGATIVE" | null> {
+  if (!HF_KEY) return null;
+  const res = await hfPost(SENTIMENT_MODEL, { inputs: text });
+  if (!res) return null;
   try {
-    const payload = {
-      model: HF_MODEL,
-      messages: [
-        {
-          role: "system",
-          content:
-            'You are a music mood detector. Analyze the user text and reply ONLY valid JSON with keys: {"mood": "happy"|"sad"|"romantic"|"energetic"|"calm"|"focus", "sentiment": "POSITIVE"|"NEGATIVE", "vibe": "one short engaging sentence"}',
-        },
-        { role: "user", content: text },
-      ],
-      max_tokens: 80,
-      temperature: 0.7,
-    };
-
-    const res = await fetch(HF_CHAT_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${HF_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) return null;
-
     const data = await res.json();
-    const rawContent = data?.choices?.[0]?.message?.content?.trim();
-    if (!rawContent) return null;
-
-    // Parse JSON from output
-    const match = rawContent.match(/\{[\s\S]*\}/);
-    if (match) {
-      const parsed = JSON.parse(match[0]);
-      const m = String(parsed.mood || "").toLowerCase();
-      const mood: MoodKey = VALID_MOODS.has(m) ? (m as MoodKey) : localMoodDetect(text);
-      const sentiment: "POSITIVE" | "NEGATIVE" =
-        parsed.sentiment === "NEGATIVE" ? "NEGATIVE" : "POSITIVE";
-      const vibe = typeof parsed.vibe === "string" ? parsed.vibe.trim() : "";
-      return { mood, sentiment, vibe };
-    }
+    const scores = Array.isArray(data) ? (Array.isArray(data[0]) ? data[0] : data) : [];
+    const top = scores.sort((a: any, b: any) => b.score - a.score)[0];
+    return top?.label ?? null;
   } catch {
-    /* fallback to local */
+    return null;
   }
+}
 
-  return null;
+async function hfGenerateLine(prompt: string): Promise<string | null> {
+  if (!HF_KEY) return null;
+  const res = await hfPost(GEN_MODEL, {
+    inputs: prompt,
+    parameters: { max_new_tokens: 24, temperature: 0.9, top_p: 0.92, return_full_text: false },
+  });
+  if (!res) return null;
+  try {
+    const data = await res.json();
+    const text = data?.[0]?.generated_text?.trim();
+    return text ? text.split("\n")[0].slice(0, 140) : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface MoodAnalysis {
@@ -110,22 +112,24 @@ const REPLY_OPENERS: Record<MoodKey, string> = {
 };
 
 export async function analyseMood(text: string): Promise<MoodAnalysis> {
-  const hfRes = await hfAnalyze(text);
-
+  const sentiment = await hfSentiment(text);
   let mood: MoodKey;
   let source: "huggingface" | "local" = "local";
-  let sentiment: "POSITIVE" | "NEGATIVE" | null = null;
-  let customVibe = "";
 
-  if (hfRes) {
+  if (sentiment) {
     source = "huggingface";
-    mood = hfRes.mood;
-    sentiment = hfRes.sentiment;
-    customVibe = hfRes.vibe;
+    // DistilBERT gives polarity; blend with keyword scan for nuance.
+    const local = localMoodDetect(text);
+    if (local !== "calm") {
+      mood = local; // specific keyword beats polarity
+    } else {
+      mood = sentiment === "POSITIVE" ? "happy" : "sad";
+    }
   } else {
     mood = localMoodDetect(text);
-    sentiment = ["happy", "romantic", "energetic"].includes(mood) ? "POSITIVE" : "NEGATIVE";
   }
+
+  const gptLine = await hfGenerateLine(`A ${mood} playlist makes you feel`);
 
   // Recommendations: live search when services are up, demo catalogue otherwise.
   const moodDef = MOODS.find((m) => m.key === mood) ?? MOODS[0];
@@ -145,9 +149,7 @@ export async function analyseMood(text: string): Promise<MoodAnalysis> {
     if (!tracks.length) tracks = DEMO_TRACKS.slice(0, 3);
   }
 
-  const reply = customVibe
-    ? `${REPLY_OPENERS[mood]} — “${customVibe}” Here are a few picks tuned to your mood:`
-    : `${REPLY_OPENERS[mood]} Here are a few picks tuned to your mood:`;
+  const reply = `${REPLY_OPENERS[mood]}${gptLine ? ` — “${gptLine}”` : ""} Here are a few picks tuned to your mood:`;
 
   return { mood, source, sentiment, reply, tracks: tracks.slice(0, 5) };
 }

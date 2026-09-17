@@ -4,28 +4,88 @@ const GENIUS_API = "https://api.genius.com";
 const LRCLIB_API = "https://lrclib.net/api";
 
 /**
- * Strip common YouTube noise, remix tags, and video metadata so search
- * engines find the actual song.
+ * Intelligent candidate generator that extracts the core song title and artist
+ * from complex YouTube video titles (e.g. "Full Song: KHAIRIYAT (BONUS TRACK) | CHHICHHORE | Sushant, Shraddha | Pritam, Amitabh B|Arijit Singh")
  */
-function cleanQuery(raw) {
-  let s = (raw || "").toString().trim();
-  // If query has " | ", often the title is first and movie/artist is second
-  s = s.split("|")[0];
-  // Strip parentheses and brackets like (Official Video), [4K], (From Movie)
-  s = s.replace(/\(.*?\)/g, " ").replace(/\[.*?\]/g, " ");
+function getCandidates(raw, rawArtist = "") {
+  let s = (raw || "").trim();
+
+  // If rawArtist is a YouTube record label channel, ignore it as artist
+  const isLabel = /t-series|sony\s*music|zee\s*music|yrf|tips|saregama|vevo|speed\s*records|white\s*hill|aditya\s*music/i.test(rawArtist);
+  const cleanArtist = isLabel ? "" : rawArtist.trim();
+
+  // Strip common YouTube prefixes
+  s = s.replace(/^(full\s+song|lyrical\s+(video|audio)|official\s+(video|audio)|video\s+song|audio\s+song|song|audio)\s*:\s*/i, "");
+
+  // Strip brackets/parentheses like (From "Movie"), (Official Video), [4K], (Lyrics)
+  const sNoParens = s.replace(/[\(\[\{].*?[\)\]\}]/g, " ");
+
   // Strip noise words
-  s = s.replace(
-    /\b(official|music|video|audio|lyric(?:al)?|full\s*song|hd|4k|1080p|remastered|ft\.?|feat\.?|slowed|reverb)\b/gi,
-    " "
-  );
-  return s.replace(/\s+/g, " ").trim();
+  const clean = sNoParens
+    .replace(/\b(official|music|video|audio|lyric(?:al)?|full\s*song|hd|4k|1080p|remastered|slowed|reverb|from\s+movie|from\s+[a-z0-9]+)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const candidates = [];
+  const add = (c) => {
+    const v = (c || "").replace(/\s+/g, " ").trim();
+    if (v.length >= 2 && !candidates.includes(v)) {
+      candidates.push(v);
+    }
+  };
+
+  if (cleanArtist) add(`${clean} ${cleanArtist}`);
+  add(clean);
+
+  // Split by pipe |
+  if (s.includes("|")) {
+    const parts = s.split("|").map((p) => p.trim()).filter(Boolean);
+    if (parts.length > 0) {
+      const p0 = parts[0]
+        .replace(/[\(\[\{].*?[\)\]\}]/g, "")
+        .replace(/\b(official|music|video|audio|lyric(?:al)?|full\s*song|hd|4k)\b/gi, "")
+        .trim();
+      add(p0);
+      if (cleanArtist) add(`${p0} ${cleanArtist}`);
+
+      for (let i = 1; i < parts.length; i++) {
+        const pN = parts[i].replace(/[\(\[\{].*?[\)\]\}]/g, "").trim();
+        if (pN.length > 0 && pN.length < 35 && !/official|video|audio|lyrics/i.test(pN)) {
+          add(`${p0} ${pN}`);
+        }
+      }
+    }
+  }
+
+  // Split by hyphen -
+  if (s.includes("-")) {
+    const dashParts = s.split("-").map((p) => p.trim()).filter(Boolean);
+    if (dashParts.length >= 2) {
+      const d0 = dashParts[0].replace(/[\(\[\{].*?[\)\]\}]/g, "").trim();
+      const d1 = dashParts[1]
+        .replace(/[\(\[\{].*?[\)\]\}]/g, "")
+        .replace(/\b(official|music|video|audio|lyrics?)\b/gi, "")
+        .trim();
+      add(`${d0} ${d1}`);
+      add(`${d1} ${d0}`);
+      add(d1);
+      add(d0);
+    }
+  }
+
+  // First 3 words as a concise title fallback
+  const words = clean.split(" ");
+  if (words.length > 3) {
+    add(words.slice(0, 3).join(" "));
+  }
+
+  return candidates.slice(0, 6);
 }
 
 /**
- * Fetch lyrics from LRCLIB (free open database, highly reliable).
+ * Fetch lyrics from LRCLIB (free open lyrics service, no key required).
  */
 async function fetchLrclib(query) {
-  if (!query || query.length < 2) return null;
   try {
     const res = await axios.get(`${LRCLIB_API}/search`, {
       params: { q: query },
@@ -41,104 +101,127 @@ async function fetchLrclib(query) {
           artist: hit.artistName,
           lyrics: hit.plainLyrics,
           syncedLyrics: hit.syncedLyrics || null,
-          source: "lrclib",
         };
       }
     }
   } catch {
-    /* fallback */
+    /* fallback to next */
   }
   return null;
 }
 
 /**
- * Fetch lyrics via Genius API + Python stream engine.
- */
-async function fetchGenius(query) {
-  const key = process.env.GENIUS_API_KEY || process.env.GENIUS_ACCESS_TOKEN;
-  if (!key) return null;
-  try {
-    const searchRes = await axios.get(`${GENIUS_API}/search`, {
-      params: { q: query },
-      headers: { Authorization: `Bearer ${key}` },
-      timeout: 4000,
-    });
-    const hit = searchRes.data?.response?.hits?.[0]?.result;
-    if (!hit) return null;
-
-    const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
-    const pyRes = await axios.get(`${streamBase}/lyrics`, {
-      params: { query: `${hit.primary_artist?.name || ""} ${hit.title || ""}`.trim() },
-      timeout: 5000,
-    });
-    if (pyRes.data?.lyrics) {
-      return {
-        title: hit.title,
-        artist: hit.primary_artist?.name,
-        url: hit.url,
-        lyrics: pyRes.data.lyrics,
-        source: "genius",
-      };
-    }
-  } catch {
-    /* fallback */
-  }
-  return null;
-}
-
-/**
- * GET /api/lyrics?q=
- * Priority 1: Genius (as requested)
- * Priority 2: LRCLIB (instant fallback so lyrics show for every song)
- * Priority 3: Query variations (stripped artist/movie)
- * Always returns 200 with clean JSON to prevent console 502 errors.
+ * GET /api/lyrics?q=&artist=
+ * Uses multi-candidate queries across Genius, LRCLIB, Python engine, and lyrics.ovh
  */
 export async function getLyrics(req, res) {
   const q = (req.query.q || "").toString().trim();
+  const artist = (req.query.artist || "").toString().trim();
   if (!q) return res.status(400).json({ error: "Missing query param ?q=" });
 
-  const cleaned = cleanQuery(q);
+  const candidates = getCandidates(q, artist);
 
-  // Execute Genius and LRCLIB in parallel with quick timeouts
-  const [geniusRes, lrcRes] = await Promise.allSettled([
-    fetchGenius(cleaned),
-    fetchLrclib(cleaned),
-  ]);
-
-  // 1 · Priority: Genius
-  if (geniusRes.status === "fulfilled" && geniusRes.value?.lyrics) {
-    return res.json(geniusRes.value);
-  }
-
-  // 2 · High-reliability fallback: LRCLIB
-  if (lrcRes.status === "fulfilled" && lrcRes.value?.lyrics) {
-    return res.json(lrcRes.value);
-  }
-
-  // 3 · Try secondary query variations if original had artist or hyphens
-  const variations = [];
-  if (q.includes("-")) {
-    variations.push(cleanQuery(q.split("-")[0]));
-    variations.push(cleanQuery(q.split("-").slice(1).join(" ")));
-  }
-  const rawClean = q.replace(/[\(\[\{].*?[\)\]\}]/g, "").trim();
-  if (rawClean && rawClean !== cleaned) {
-    variations.push(rawClean);
-  }
-
-  for (const v of variations) {
-    if (v && v.length >= 3) {
-      const extra = await fetchLrclib(v);
-      if (extra && extra.lyrics) {
-        return res.json(extra);
+  // 1 · Genius API (Primary: checks top candidate queries)
+  const key = process.env.GENIUS_API_KEY || process.env.GENIUS_ACCESS_TOKEN;
+  if (key) {
+    for (const cand of candidates.slice(0, 3)) {
+      try {
+        const searchRes = await axios.get(`${GENIUS_API}/search`, {
+          params: { q: cand },
+          headers: { Authorization: `Bearer ${key}` },
+          timeout: 5000,
+        });
+        const hit = searchRes.data?.response?.hits?.[0]?.result;
+        if (hit) {
+          const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
+          try {
+            const pyRes = await axios.get(`${streamBase}/lyrics`, {
+              params: { query: `${hit.primary_artist?.name} ${hit.title}` },
+              timeout: 6000,
+            });
+            if (pyRes.data?.lyrics) {
+              return res.json({
+                title: hit.title,
+                artist: hit.primary_artist?.name,
+                url: hit.url,
+                lyrics: pyRes.data.lyrics,
+                source: "genius",
+              });
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+      } catch {
+        /* ignore */
       }
     }
   }
 
-  // Clean empty response (200 status prevents console errors)
+  // 2 · LRCLIB (High reliability: searches candidate queries)
+  for (const cand of candidates) {
+    const lrc = await fetchLrclib(cand);
+    if (lrc && lrc.lyrics) {
+      return res.json({
+        title: lrc.title,
+        artist: lrc.artist,
+        lyrics: lrc.lyrics,
+        syncedLyrics: lrc.syncedLyrics,
+        source: "lrclib",
+      });
+    }
+  }
+
+  // 3 · Python stream engine directly
+  const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
+  for (const cand of candidates.slice(0, 2)) {
+    try {
+      const pyRes = await axios.get(`${streamBase}/lyrics`, {
+        params: { query: cand },
+        timeout: 6000,
+      });
+      if (pyRes.data?.lyrics) {
+        return res.json({
+          title: pyRes.data.title || cand,
+          artist: pyRes.data.artist || "",
+          lyrics: pyRes.data.lyrics,
+          source: "genius-py",
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 4 · lyrics.ovh (Extra fallback for English tracks)
+  for (const cand of candidates.slice(0, 3)) {
+    try {
+      const parts = cand.split(" ");
+      if (parts.length >= 2) {
+        const a = parts[0];
+        const t = parts.slice(1).join(" ");
+        const ovhRes = await axios.get(
+          `https://api.lyrics.ovh/v1/${encodeURIComponent(a)}/${encodeURIComponent(t)}`,
+          { timeout: 4000 }
+        );
+        if (ovhRes.data?.lyrics) {
+          return res.json({
+            title: t,
+            artist: a,
+            lyrics: ovhRes.data.lyrics,
+            source: "lyrics.ovh",
+          });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Graceful empty response (200 OK prevents console errors)
   return res.json({
-    title: cleaned,
-    artist: "",
+    title: candidates[0] || q,
+    artist: artist || "",
     lyrics: "",
     note: "no-lyrics-found",
   });
