@@ -56,6 +56,8 @@ SEARCH_OPTS = {
     "extract_flat": True,
     "noplaylist": True,
     "skip_download": True,
+    # Use iOS client — avoids "page needs to be reloaded" errors on cloud servers
+    "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
     **_cookie_opts(),
 }
 
@@ -66,6 +68,8 @@ STREAM_OPTS = {
     "skip_download": True,
     # Prefer native audio-only m4a; fall back to any audio-only format.
     "format": "bestaudio[ext=m4a]/bestaudio/best",
+    # Use iOS client — avoids "page needs to be reloaded" errors on cloud servers
+    "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
     **_cookie_opts(),
 }
 
