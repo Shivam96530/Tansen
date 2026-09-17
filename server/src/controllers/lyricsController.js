@@ -60,19 +60,7 @@ export async function getLyrics(req, res) {
 
   const cleaned = cleanQuery(q);
 
-  // 1 · Try LRCLIB (no API key required, high success rate)
-  const lrc = await fetchLrclib(cleaned);
-  if (lrc && lrc.lyrics) {
-    return res.json({
-      title: lrc.title,
-      artist: lrc.artist,
-      lyrics: lrc.lyrics,
-      syncedLyrics: lrc.syncedLyrics,
-      source: "lrclib",
-    });
-  }
-
-  // 2 · Try Genius API if configured
+  // 1 · Try Genius API first (using configured GENIUS_API_KEY or GENIUS_ACCESS_TOKEN)
   const key = process.env.GENIUS_API_KEY || process.env.GENIUS_ACCESS_TOKEN;
   if (key) {
     try {
@@ -85,7 +73,7 @@ export async function getLyrics(req, res) {
 
       const hit = searchRes.data?.response?.hits?.[0]?.result;
       if (hit) {
-        // Fetch from Python stream engine using lyricsgenius if available
+        // Fetch lyrics via Python engine lyricsgenius scraper
         const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
         try {
           const pyRes = await axios.get(`${streamBase}/lyrics`, {
@@ -103,15 +91,15 @@ export async function getLyrics(req, res) {
             });
           }
         } catch {
-          /* ignore */
+          /* try next */
         }
       }
     } catch {
-      /* ignore */
+      /* try next */
     }
   }
 
-  // 3 · Try Python stream engine directly with cleaned title
+  // 2 · Try Python stream engine directly with cleaned query
   const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
   try {
     const pyRes = await axios.get(`${streamBase}/lyrics`, {
@@ -127,7 +115,19 @@ export async function getLyrics(req, res) {
       });
     }
   } catch {
-    /* ignore */
+    /* try next */
+  }
+
+  // 3 · Fallback to LRCLIB (if Genius is rate-limited, missing token, or has no lyrics)
+  const lrc = await fetchLrclib(cleaned);
+  if (lrc && lrc.lyrics) {
+    return res.json({
+      title: lrc.title,
+      artist: lrc.artist,
+      lyrics: lrc.lyrics,
+      syncedLyrics: lrc.syncedLyrics,
+      source: "lrclib",
+    });
   }
 
   // Graceful empty response (status 200 keeps console clean)
