@@ -139,7 +139,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           ytPlayerRef.current = new window.YT.Player("tansen-yt-player", {
             height: "240",
             width: "240",
-            host: "https://www.youtube-nocookie.com",
             playerVars: {
               autoplay: 1,
               controls: 0,
