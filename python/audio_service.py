@@ -56,8 +56,8 @@ SEARCH_OPTS = {
     "extract_flat": True,
     "noplaylist": True,
     "skip_download": True,
-    # Use iOS client — avoids "page needs to be reloaded" errors on cloud servers
-    "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
+    # Use Android + iOS + Web — prevents SABR-only format missing URL errors
+    "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
     **_cookie_opts(),
 }
 
@@ -66,10 +66,10 @@ STREAM_OPTS = {
     "no_warnings": True,
     "noplaylist": True,
     "skip_download": True,
-    # Accept any audio format — iOS client may not serve m4a directly.
+    # Accept any audio format or muxed format (e.g. format 18)
     "format": "bestaudio/best",
-    # Use iOS client — avoids "page needs to be reloaded" errors on cloud servers
-    "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
+    # Android client returns direct HTTPS stream URLs even under YouTube SABR experiments
+    "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
     **_cookie_opts(),
 }
 
@@ -78,9 +78,12 @@ STREAM_OPTS = {
 # ---------------------------------------------------------------- helpers
 
 def _pick_audio_url(info: dict) -> str | None:
-    """Choose the best audio-only format URL from an yt-dlp info dict."""
+    """Choose the best audio stream URL from an yt-dlp info dict."""
     formats = info.get("formats") or []
-    audio_only = [f for f in formats if f.get("acodec") not in (None, "none")]
+    audio_candidates = [
+        f for f in formats
+        if f.get("acodec") not in (None, "none") and f.get("url")
+    ]
 
     def score(fmt: dict) -> tuple:
         return (
@@ -88,8 +91,8 @@ def _pick_audio_url(info: dict) -> str | None:
             fmt.get("abr") or 0,
         )
 
-    if audio_only:
-        return sorted(audio_only, key=score, reverse=True)[0].get("url")
+    if audio_candidates:
+        return sorted(audio_candidates, key=score, reverse=True)[0].get("url")
     return info.get("url")
 
 
