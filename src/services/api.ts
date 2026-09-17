@@ -41,37 +41,47 @@ export async function checkHealth(): Promise<ServiceStatus> {
   return { api, stream };
 }
 
-/* ---------------- search ----------------
- * Express → /api/search?q=  (proxies yt-dlp `ytsearch5:` on Flask,
- * Genius API metadata as fallback). */
+/* ---------------- search ---------------- */
+const PLAYLIST_REGEX = /\b(jukebox|full album|nonstop|non stop|compilation|all songs|top \d+|best of \d+|hour mix|\d+\s*hours?|\d+\s*min(?:s|utes)? mix|playlist|mashup mix)\b/i;
+
+export function isSingleTrack(t: Track): boolean {
+  if (t.duration > 660 || (t.duration > 0 && t.duration < 45)) return false;
+  if (PLAYLIST_REGEX.test(t.title)) return false;
+  return true;
+}
 
 function normalise(raw: any): Track | null {
   const id = raw?.id ?? raw?.videoId;
   const title = raw?.title;
   if (!id || !title) return null;
+  const duration = Number(raw.duration ?? 0);
+  if (duration > 660 || (duration > 0 && duration < 45)) return null;
+  if (PLAYLIST_REGEX.test(String(title))) return null;
+
   return {
     id: String(id),
     title: String(title).replace(/\s+/g, " ").trim(),
     artist: raw.artist ?? raw.uploader ?? raw.channel ?? "Unknown artist",
     thumbnail: raw.thumbnail ?? (raw.id || raw.videoId ? `https://i.ytimg.com/vi/${raw.id ?? raw.videoId}/hqdefault.jpg` : null),
-    duration: Number(raw.duration ?? 0),
+    duration,
     source: "youtube",
   };
 }
 
-export async function searchTracks(query: string): Promise<Track[]> {
+export async function searchTracks(query: string, limit = 12, allowDemoFallback = false): Promise<Track[]> {
   const q = query.trim();
   if (!q) return [];
 
   // 1 · Express API (canonical path)
   try {
     const t = timeout(12000);
-    const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}`, { signal: t.signal });
+    const res = await fetch(`${API_BASE}/api/search?q=${encodeURIComponent(q)}&limit=${limit}`, { signal: t.signal });
     t.done();
     if (res.ok) {
       const data = await res.json();
       const list = (data.results ?? data).map(normalise).filter(Boolean) as Track[];
-      if (list.length) return dedupeTracks(list);
+      const filtered = dedupeTracks(list.filter(isSingleTrack));
+      if (filtered.length) return filtered;
     }
   } catch {
     /* fall through */
@@ -80,23 +90,28 @@ export async function searchTracks(query: string): Promise<Track[]> {
   // 2 · Direct to Flask microservice
   try {
     const t = timeout(12000);
-    const res = await fetch(`${STREAM_BASE}/search?q=${encodeURIComponent(q)}`, { signal: t.signal });
+    const res = await fetch(`${STREAM_BASE}/search?q=${encodeURIComponent(q)}&limit=${limit}`, { signal: t.signal });
     t.done();
     if (res.ok) {
       const data = await res.json();
       const list = (data.results ?? data).map(normalise).filter(Boolean) as Track[];
-      if (list.length) return dedupeTracks(list);
+      const filtered = dedupeTracks(list.filter(isSingleTrack));
+      if (filtered.length) return filtered;
     }
   } catch {
     /* fall through */
   }
 
-  // 3 · Demo catalogue (offline mode)
-  const needle = q.toLowerCase();
-  const matches = DEMO_TRACKS.filter(
-    (t) => t.title.toLowerCase().includes(needle) || t.artist.toLowerCase().includes(needle)
-  );
-  return matches.length ? matches : DEMO_TRACKS.slice(0, 6);
+  // 3 · Demo catalogue (only if explicitly allowed, e.g. for offline demo testing)
+  if (allowDemoFallback) {
+    const needle = q.toLowerCase();
+    const matches = DEMO_TRACKS.filter(
+      (t) => t.title.toLowerCase().includes(needle) || t.artist.toLowerCase().includes(needle)
+    );
+    return matches.length ? matches : DEMO_TRACKS.slice(0, 6);
+  }
+
+  return [];
 }
 
 /* ---------------- related tracks (radio) ----------------
@@ -108,10 +123,19 @@ export async function getRelatedTracks(
   heard: Set<string>,
   count = 4
 ): Promise<Track[]> {
+  // Clean channel names or video labels from seed info
+  const cleanTitle = seed.title
+    .replace(/\([^)]*\)|\[[^\]]*\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const cleanArtist = seed.artist
+    .replace(/ - Topic|VEVO|Official|Records|Channel/gi, "")
+    .trim();
+
   const queries = [
-    `${seed.artist} popular songs`,
-    `songs similar to ${seed.title}`,
-    `${seed.artist} best hits`,
+    `${cleanTitle} single song`,
+    `${cleanArtist || seed.artist} hit song`,
+    `songs like ${cleanTitle}`,
   ];
 
   const picked: Track[] = [];
@@ -120,8 +144,9 @@ export async function getRelatedTracks(
   for (const q of queries) {
     if (picked.length >= count) break;
     try {
-      const results = await searchTracks(q);
+      const results = await searchTracks(q, 8);
       for (const t of results) {
+        if (!isSingleTrack(t)) continue;
         const k = songKey(t);
         if (!seenKeys.has(k) && !heard.has(k)) {
           seenKeys.add(k);

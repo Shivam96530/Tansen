@@ -40,6 +40,7 @@ export default function AIAssistant() {
           role: "assistant",
           text: a.reply,
           mood: a.mood,
+          emotion: a.emotion,
           tracks: a.tracks,
         });
       } catch {
@@ -91,7 +92,7 @@ export default function AIAssistant() {
           <div>
             <p className="text-sm font-medium">Mood Studio</p>
             <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-mist">
-              distilbert · gpt2
+              roberta-go-emotions · live single tracks
             </p>
           </div>
         </div>
@@ -123,14 +124,33 @@ export default function AIAssistant() {
                 )}
               >
                 {m.role === "assistant" && m.mood && (
-                  <span className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-iris/30 bg-iris/10 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-iris">
-                    <Bot size={10} />
-                    mood · {moodLabel(m.mood)}
-                  </span>
+                  <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-iris/30 bg-iris/10 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-iris">
+                      <Bot size={10} />
+                      mood · {moodLabel(m.mood)}
+                    </span>
+                    {m.emotion && (
+                      <span className="rounded-full border border-mist/20 bg-mist/5 px-2 py-0.5 font-mono text-[8.5px] uppercase tracking-[0.14em] text-mist">
+                        {m.emotion}
+                      </span>
+                    )}
+                  </div>
                 )}
                 <p>{m.text}</p>
                 {m.tracks && m.tracks.length > 0 && (
                   <div className="mt-3 space-y-1.5">
+                    <div className="mb-2 flex items-center justify-between border-b border-seam/60 pb-2">
+                      <span className="text-[11px] font-medium text-mist">
+                        {m.tracks.length} continuous tracks · no playlists
+                      </span>
+                      <button
+                        onClick={() => playTrack(m.tracks![0], m.tracks!)}
+                        className="flex items-center gap-1.5 rounded-full bg-iris px-2.5 py-1 text-[11px] font-semibold text-ink shadow-sm transition-all hover:scale-105 active:scale-95"
+                      >
+                        <Play size={10} className="fill-current" />
+                        Play All
+                      </button>
+                    </div>
                     {m.tracks.map((t) => (
                       <RecoRow key={t.id} track={t} onPlay={() => playTrack(t, m.tracks!)} />
                     ))}
@@ -182,7 +202,7 @@ export default function AIAssistant() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="e.g. I just finished a long run and feel unstoppable…"
+            placeholder="e.g. Broken hearted after breakup, want some Arijit Singh…"
             className="flex-1 bg-transparent text-[13.5px] outline-none placeholder:text-mist/50"
           />
           <button

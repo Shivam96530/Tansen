@@ -3,10 +3,16 @@ import axios from "axios";
 const STREAM_BASE = process.env.STREAM_BASE_URL || "http://localhost:5002";
 const GENIUS_API = "https://api.genius.com";
 
+const PLAYLIST_REGEX = /\b(jukebox|full album|nonstop|non stop|compilation|all songs|top \d+|best of \d+|hour mix|\d+\s*hours?|\d+\s*min(?:s|utes)? mix|playlist|mashup mix)\b/i;
+
 const normalise = (raw) => {
   const id = raw?.id ?? raw?.videoId;
   const title = raw?.title;
   if (!id || !title) return null;
+  const duration = Number(raw.duration ?? 0);
+  if (duration > 660 || (duration > 0 && duration < 45)) return null;
+  if (PLAYLIST_REGEX.test(title)) return null;
+
   return {
     id: String(id),
     title: String(title).replace(/\s+/g, " ").trim(),
@@ -14,23 +20,24 @@ const normalise = (raw) => {
     thumbnail:
       raw.thumbnail ??
       `https://i.ytimg.com/vi/${raw.id ?? raw.videoId}/hqdefault.jpg`,
-    duration: Number(raw.duration ?? 0),
+    duration,
     source: "youtube",
   };
 };
 
 /**
- * GET /api/search?q=
- * 1 · Flask stream engine — yt-dlp `ytsearch5:` (title, channel, thumbnails)
+ * GET /api/search?q=&limit=
+ * 1 · Flask stream engine — yt-dlp `ytsearch:` (title, channel, thumbnails)
  * 2 · Genius API — metadata fallback when the stream engine is offline
  */
 export async function searchSongs(req, res) {
   const q = (req.query.q || "").toString().trim();
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 30);
   if (!q) return res.status(400).json({ error: "Missing query param ?q=" });
 
   try {
     const { data } = await axios.get(`${STREAM_BASE}/search`, {
-      params: { q },
+      params: { q, limit },
       timeout: 15000,
     });
     const results = (data.results || data || []).map(normalise).filter(Boolean);

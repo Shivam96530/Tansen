@@ -178,6 +178,12 @@ _NOISE_WORDS = (
 )
 
 
+_PLAYLIST_RE = re.compile(
+    r"\b(jukebox|full album|nonstop|non stop|compilation|all songs|top \d+|best of \d+|hour mix|\d+\s*hours?|\d+\s*min(?:s|utes)? mix|playlist|mashup mix)\b",
+    re.IGNORECASE,
+)
+
+
 def _song_key(title: str) -> str:
     """Collapse an upload title to a song identity (dedupe re-uploads)."""
     s = (title or "").lower()
@@ -219,28 +225,37 @@ def search():
     if not query:
         return jsonify(error="Missing query param ?q="), 400
 
-    # Ask for a wider net, then collapse duplicate uploads of the same song so
-    # the client receives distinct tracks (not 5 copies of one hit).
-    limit = min(int(request.args.get("limit", 8) or 8), 15)
+    # Retrieve a generous net so after dropping playlists/jukeboxes we retain distinct single songs.
+    limit = min(max(int(request.args.get("limit", 12) or 12), 1), 30)
+    fetch_count = min(max(limit * 3, 25), 60)
     try:
         with yt_dlp.YoutubeDL(SEARCH_OPTS) as ydl:
-            info = ydl.extract_info(f"ytsearch{limit * 2}:{query}", download=False)
+            info = ydl.extract_info(f"ytsearch{fetch_count}:{query}", download=False)
 
         results, seen = [], set()
         for entry in info.get("entries") or []:
             if not entry or not entry.get("id"):
                 continue
-            key = _song_key(entry.get("title") or "")
+            dur = entry.get("duration") or 0
+            title = entry.get("title") or "Untitled"
+
+            # Filter out compilations, 2-hour jukeboxes, playlists, and non-song snippets
+            if dur > 660 or (dur > 0 and dur < 45):
+                continue
+            if _PLAYLIST_RE.search(title):
+                continue
+
+            key = _song_key(title)
             if key and key in seen:
                 continue
             seen.add(key)
             results.append(
                 {
                     "id": entry["id"],
-                    "title": entry.get("title") or "Untitled",
+                    "title": title,
                     "artist": entry.get("channel") or entry.get("uploader") or "Unknown artist",
                     "thumbnail": f"https://i.ytimg.com/vi/{entry['id']}/hqdefault.jpg",
-                    "duration": entry.get("duration") or 0,
+                    "duration": dur,
                 }
             )
             if len(results) >= limit:

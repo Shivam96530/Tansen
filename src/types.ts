@@ -34,6 +34,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   text: string;
   mood?: MoodKey;
+  emotion?: string;
   tracks?: Track[];
 }
 
