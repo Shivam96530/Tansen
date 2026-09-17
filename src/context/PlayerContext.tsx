@@ -12,6 +12,13 @@ import { checkHealth, getAudioUrl, getLyrics, getRelatedTracks, searchTracks } f
 import { dedupeTracks, isSameSong, songKey } from "../lib/dedupe";
 import type { LyricsResult, ServiceStatus, Track, ViewKey } from "../types";
 
+declare global {
+  interface Window {
+    YT?: any;
+    onYouTubeIframeAPIReady?: () => void;
+  }
+}
+
 type RepeatMode = "off" | "all" | "one";
 
 interface PlayerState {
@@ -98,7 +105,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const [status, setStatus] = useState<ServiceStatus>({ api: "checking", stream: "checking" });
 
+  const [engine, setEngine] = useState<"audio" | "youtube" | "sim">("audio");
+  const engineRef = useRef<"audio" | "youtube" | "sim">("audio");
+  engineRef.current = engine;
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ytPlayerRef = useRef<any>(null);
+  const ytReadyRef = useRef(false);
+
   const loadId = useRef(0);
   const lyricsCache = useRef(new Map<string, LyricsResult>());
   const keepPlaying = useRef(false);
@@ -116,6 +130,95 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   radioRef.current = radio;
   keepPlaying.current = isPlaying;
 
+  /* ---- YouTube player initialization ---- */
+  useEffect(() => {
+    function initYT() {
+      if (window.YT && window.YT.Player && !ytPlayerRef.current) {
+        try {
+          ytPlayerRef.current = new window.YT.Player("tansen-yt-player", {
+            height: "1",
+            width: "1",
+            playerVars: {
+              autoplay: 1,
+              controls: 0,
+              disablekb: 1,
+              fs: 0,
+              modestbranding: 1,
+              playsinline: 1,
+              rel: 0,
+            },
+            events: {
+              onReady: () => {
+                ytReadyRef.current = true;
+                if (ytPlayerRef.current) {
+                  try {
+                    ytPlayerRef.current.setVolume(Math.round(volume * 100));
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              },
+              onStateChange: (event: any) => {
+                // YT.PlayerState: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
+                if (event.data === 1) {
+                  setIsPlaying(true);
+                  setIsLoading(false);
+                  try {
+                    const dur = ytPlayerRef.current?.getDuration?.();
+                    if (dur && isFinite(dur) && dur > 0) setDuration(dur);
+                  } catch {
+                    /* ignore */
+                  }
+                } else if (event.data === 2) {
+                  setIsPlaying(false);
+                } else if (event.data === 0) {
+                  handleEndedRef.current();
+                } else if (event.data === 3) {
+                  setIsLoading(true);
+                }
+              },
+              onError: () => {
+                setIsLoading(false);
+              },
+            },
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    if (window.YT && window.YT.Player) {
+      initYT();
+    } else {
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => {
+        if (typeof prev === "function") prev();
+        initYT();
+      };
+    }
+  }, []);
+
+  /* ---- YouTube ticker for progress & duration ---- */
+  useEffect(() => {
+    if (engine !== "youtube" || !isPlaying) return;
+    const interval = setInterval(() => {
+      const p = ytPlayerRef.current;
+      if (!p || typeof p.getCurrentTime !== "function") return;
+      try {
+        const cur = p.getCurrentTime() || 0;
+        const dur = p.getDuration() || 0;
+        setProgress(cur);
+        if (dur && isFinite(dur) && dur > 0) {
+          setDuration(dur);
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 250);
+    return () => clearInterval(interval);
+  }, [engine, isPlaying]);
+
   /* ---- audio element ---- */
   useEffect(() => {
     const audio = new Audio();
@@ -124,11 +227,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audioRef.current = audio;
 
     const onTime = () => {
+      if (engineRef.current !== "audio") return;
       setProgress(audio.currentTime || 0);
       setDuration(audio.duration && isFinite(audio.duration) ? audio.duration : 0);
     };
-    const onEnd = () => handleEndedRef.current();
-    const onErr = () => setIsLoading(false);
+    const onEnd = () => {
+      if (engineRef.current === "audio") handleEndedRef.current();
+    };
+    const onErr = () => {
+      if (engineRef.current === "audio") setIsLoading(false);
+    };
 
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onTime);
@@ -166,6 +274,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   durationRef.current = duration;
 
   const startSim = useCallback((len: number) => {
+    setEngine("sim");
     setSimulated(true);
     setDuration(len || 210);
     setProgress(0);
@@ -178,6 +287,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       a.pause();
       a.removeAttribute("src");
       a.load();
+    }
+    const yt = ytPlayerRef.current;
+    if (yt && typeof yt.stopVideo === "function") {
+      try {
+        yt.stopVideo();
+      } catch {
+        /* ignore */
+      }
     }
   }, []);
 
@@ -209,9 +326,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
 
       if (track.source !== "demo") {
+        // Attempt 1: Direct stream URL (.m4a)
         const url = await getAudioUrl(track.id);
         if (loadId.current !== id) return; // stale
+
         if (url && audioRef.current) {
+          setEngine("audio");
           setIsLoading(false);
           const a = audioRef.current;
           a.src = url;
@@ -221,10 +341,45 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             setIsPlaying(true);
             return;
           } catch {
-            /* fall back to sim below */
+            /* fall through to YouTube client-side player */
           }
         }
+
+        // Attempt 2: YouTube Client-side IFrame Player
+        // Resolves YouTube streams directly inside the user's browser, bypassing
+        // datacenter bot-detection blocks completely on cloud hosts like Render.
+        const isYT = !track.id.startsWith("demo-") && track.id.length >= 8;
+        if (isYT) {
+          setEngine("youtube");
+          const playYt = () => {
+            const p = ytPlayerRef.current;
+            if (p && typeof p.loadVideoById === "function") {
+              try {
+                p.loadVideoById(track.id);
+                p.setVolume(Math.round(volume * 100));
+                p.playVideo();
+                setIsLoading(false);
+                setIsPlaying(true);
+                return true;
+              } catch {
+                return false;
+              }
+            }
+            return false;
+          };
+
+          if (playYt()) return;
+
+          // If YT player is initializing, wait briefly and retry
+          setTimeout(() => {
+            if (loadId.current === id && playYt()) {
+              setIsPlaying(true);
+            }
+          }, 600);
+          return;
+        }
       }
+
       if (loadId.current !== id) return;
       setIsLoading(false);
       startSim(track.duration || 210);
@@ -343,7 +498,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (repeatRef.current === "one") {
       seekToRef.current(0);
       setIsPlaying(true);
-      if (audioRef.current && !simulated) audioRef.current.play().catch(() => {});
+      if (engineRef.current === "youtube") {
+        try {
+          ytPlayerRef.current?.playVideo?.();
+        } catch {
+          /* ignore */
+        }
+      } else if (engineRef.current === "audio" && audioRef.current && !simulated) {
+        audioRef.current.play().catch(() => {});
+      }
       return;
     }
     const q = queueRef.current;
@@ -373,9 +536,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const d = durationRef.current || 0;
       const v = Math.max(0, Math.min(sec, d));
       setProgress(v);
-      if (!simulated && audioRef.current) audioRef.current.currentTime = v;
+      if (engineRef.current === "youtube") {
+        try {
+          ytPlayerRef.current?.seekTo?.(v, true);
+        } catch {
+          /* ignore */
+        }
+      } else if (engineRef.current === "audio" && audioRef.current) {
+        audioRef.current.currentTime = v;
+      }
     },
-    [simulated]
+    []
   );
 
   const seekToRef = useRef(seekTo);
@@ -385,8 +556,28 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const toggle = useCallback(() => {
     if (!current) return;
-    if (simulated) {
+    if (engineRef.current === "sim") {
       setIsPlaying((p) => !p);
+      return;
+    }
+    if (engineRef.current === "youtube") {
+      const yt = ytPlayerRef.current;
+      if (!yt) return;
+      if (isPlaying) {
+        try {
+          yt.pauseVideo?.();
+        } catch {
+          /* ignore */
+        }
+        setIsPlaying(false);
+      } else {
+        try {
+          yt.playVideo?.();
+        } catch {
+          /* ignore */
+        }
+        setIsPlaying(true);
+      }
       return;
     }
     const a = audioRef.current;
@@ -403,6 +594,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const c = Math.max(0, Math.min(1, v));
     setVolumeState(c);
     if (audioRef.current) audioRef.current.volume = c;
+    try {
+      ytPlayerRef.current?.setVolume?.(Math.round(c * 100));
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const cycleRepeat = useCallback(
