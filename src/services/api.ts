@@ -141,19 +141,41 @@ export async function getRelatedTracks(
 
 export async function getAudioUrl(videoId: string): Promise<string | null> {
   if (videoId.startsWith("demo-")) return null; // simulated playback
+
+  // 1 · Express API proxy (/api/get-audio-url/:id) — works on deployed site
+  //     because Express knows the real Python engine URL from STREAM_BASE_URL env var.
   try {
-    const t = timeout(15000);
-    const res = await fetch(`${STREAM_BASE}/get-audio-url/${encodeURIComponent(videoId)}`, {
+    const t = timeout(20000);
+    const res = await fetch(`${API_BASE}/api/get-audio-url/${encodeURIComponent(videoId)}`, {
       signal: t.signal,
     });
     t.done();
     if (res.ok) {
       const data = await res.json();
-      return data.audio_url ?? data.audioUrl ?? data.url ?? null;
+      const url = data.audio_url ?? data.audioUrl ?? data.url ?? null;
+      if (url) return url;
     }
   } catch {
-    /* offline */
+    /* fall through */
   }
+
+  // 2 · Direct Flask stream engine (local dev only when VITE_STREAM_BASE_URL is set)
+  if (STREAM_BASE && STREAM_BASE !== "") {
+    try {
+      const t = timeout(20000);
+      const res = await fetch(`${STREAM_BASE}/get-audio-url/${encodeURIComponent(videoId)}`, {
+        signal: t.signal,
+      });
+      t.done();
+      if (res.ok) {
+        const data = await res.json();
+        return data.audio_url ?? data.audioUrl ?? data.url ?? null;
+      }
+    } catch {
+      /* offline */
+    }
+  }
+
   return null;
 }
 

@@ -65,3 +65,23 @@ export async function searchSongs(req, res) {
 
   return res.json({ source: "none", query: q, results: [] });
 }
+
+/**
+ * GET /api/get-audio-url/:videoId
+ * Proxies to the Flask stream engine so the browser never calls localhost:5002 directly.
+ */
+export async function getAudioStream(req, res) {
+  const videoId = req.params.videoId;
+  if (!videoId) return res.status(400).json({ error: "Missing videoId parameter" });
+  try {
+    const { data } = await axios.get(
+      `${STREAM_BASE}/get-audio-url/${encodeURIComponent(videoId)}`,
+      { timeout: 20000 }
+    );
+    return res.json(data);
+  } catch (err) {
+    return res
+      .status(502)
+      .json({ error: "Audio stream resolution failed", detail: String(err?.message || err) });
+  }
+}
