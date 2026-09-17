@@ -1,92 +1,140 @@
 import axios from "axios";
 
 const GENIUS_API = "https://api.genius.com";
+const LRCLIB_API = "https://lrclib.net/api";
 
 /**
- * Strip YouTube video title noise so Genius search can find the song.
- * e.g. "Tujhe Sochta Hoon (Lyrical Audio) | KK | Jannat 2 Sony Music India"
- *   → "Tujhe Sochta Hoon KK"
+ * Strip YouTube video title noise so search can find the clean song identity.
+ * e.g. "Harry Styles - As It Was (Official Video)" → "Harry Styles As It Was"
+ *      "Tujhe Sochta Hoon (Lyrical Audio) | KK | Jannat 2" → "Tujhe Sochta Hoon KK"
  */
 function cleanQuery(raw) {
   return raw
-    .split("|")[0]                                        // keep only before first pipe
-    .replace(/\(.*?\)/g, "")                              // strip (Lyrical Audio), (Official Video) etc.
-    .replace(/\[.*?\]/g, "")                              // strip [4K], [HD] etc.
-    .replace(/\b(official|video|audio|lyric(?:al)?|full\s*song|hd|4k|ft\.?|feat\.?)\b/gi, "")
+    .split("|")[0]
+    .replace(/\(.*?\)/g, "")
+    .replace(/\[.*?\]/g, "")
+    .replace(/\b(official|music|video|audio|lyric(?:al)?|full\s*song|hd|4k|ft\.?|feat\.?)\b/gi, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }
 
 /**
+ * Fetch lyrics from LRCLIB (free open lyrics service, no key required).
+ */
+async function fetchLrclib(query) {
+  try {
+    const res = await axios.get(`${LRCLIB_API}/search`, {
+      params: { q: query },
+      headers: { "User-Agent": "Tansen-Music-App/1.0" },
+      timeout: 8000,
+    });
+    const items = res.data;
+    if (Array.isArray(items) && items.length > 0) {
+      // Pick first item that has plainLyrics
+      const hit = items.find((i) => i.plainLyrics) || items[0];
+      if (hit && hit.plainLyrics) {
+        return {
+          title: hit.trackName,
+          artist: hit.artistName,
+          lyrics: hit.plainLyrics,
+          syncedLyrics: hit.syncedLyrics || null,
+        };
+      }
+    }
+  } catch {
+    /* fallback to next provider */
+  }
+  return null;
+}
+
+/**
  * GET /api/lyrics?q=
- * Genius search → top hit → fetch lyrics via Genius /songs/{id} API
- * (no page scraping — avoids Cloudflare 403 blocks on genius.com).
+ * 1. Queries LRCLIB (fast, free, no API key needed).
+ * 2. Fallbacks to Genius API if configured.
+ * 3. Fallbacks to Python stream engine.
+ * Always answers 200 with clean JSON (never 502/503) so the console stays clean.
  */
 export async function getLyrics(req, res) {
   const q = (req.query.q || "").toString().trim();
   if (!q) return res.status(400).json({ error: "Missing query param ?q=" });
 
-  const key = process.env.GENIUS_API_KEY;
-  if (!key) {
-    return res
-      .status(503)
-      .json({ error: "GENIUS_API_KEY is not configured on the API bridge." });
-  }
+  const cleaned = cleanQuery(q);
 
-  const headers = { Authorization: `Bearer ${key}` };
-  const geniusQuery = cleanQuery(q);
-
-  try {
-    // Step 1: search for top matching song (use cleaned query, not raw YouTube title)
-    const searchRes = await axios.get(`${GENIUS_API}/search`, {
-      params: { q: geniusQuery },
-      headers,
-      timeout: 8000,
-    });
-
-    const hit = searchRes.data?.response?.hits?.[0]?.result;
-    // "No match" is an expected outcome, not an HTTP error —
-    // answer 200 with an empty payload so consoles stay clean.
-    if (!hit) return res.json({ lyrics: "", note: "no-match", query: q });
-
-    // Step 2: fetch full song data from the API (has lyrics_state and description)
-    const songRes = await axios.get(`${GENIUS_API}/songs/${hit.id}`, {
-      params: { text_format: "plain" },
-      headers,
-      timeout: 8000,
-    });
-
-    const song = songRes.data?.response?.song;
-    if (!song) return res.json({ lyrics: "", note: "no-match", query: q });
-
-    // Step 3: Use the Python stream engine's lyricsgenius as fallback if available
-    const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
-    let lyrics = "";
-
-    try {
-      const pyRes = await axios.get(`${streamBase}/lyrics`, {
-        params: { query: `${hit.primary_artist?.name} ${hit.title}` },
-        timeout: 12000,
-      });
-      lyrics = pyRes.data?.lyrics || "";
-    } catch {
-      // Python engine unavailable or no Genius token — use description as fallback
-      lyrics = song.description?.plain || "";
-    }
-
-    if (!lyrics) {
-      return res.json({ lyrics: "", note: "no-lyrics-available", title: song.title, artist: song.primary_artist?.name });
-    }
-
+  // 1 · Try LRCLIB (no API key required, high success rate)
+  const lrc = await fetchLrclib(cleaned);
+  if (lrc && lrc.lyrics) {
     return res.json({
-      title: song.title,
-      artist: song.primary_artist?.name,
-      url: song.url,
-      lyrics,
+      title: lrc.title,
+      artist: lrc.artist,
+      lyrics: lrc.lyrics,
+      syncedLyrics: lrc.syncedLyrics,
+      source: "lrclib",
     });
-  } catch (err) {
-    return res
-      .status(502)
-      .json({ error: "Lyrics resolution failed.", detail: String(err?.message || err) });
   }
+
+  // 2 · Try Genius API if configured
+  const key = process.env.GENIUS_API_KEY || process.env.GENIUS_ACCESS_TOKEN;
+  if (key) {
+    try {
+      const headers = { Authorization: `Bearer ${key}` };
+      const searchRes = await axios.get(`${GENIUS_API}/search`, {
+        params: { q: cleaned },
+        headers,
+        timeout: 8000,
+      });
+
+      const hit = searchRes.data?.response?.hits?.[0]?.result;
+      if (hit) {
+        // Fetch from Python stream engine using lyricsgenius if available
+        const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
+        try {
+          const pyRes = await axios.get(`${streamBase}/lyrics`, {
+            params: { query: `${hit.primary_artist?.name} ${hit.title}` },
+            timeout: 10000,
+          });
+          const pyLyrics = pyRes.data?.lyrics;
+          if (pyLyrics) {
+            return res.json({
+              title: hit.title,
+              artist: hit.primary_artist?.name,
+              url: hit.url,
+              lyrics: pyLyrics,
+              source: "genius",
+            });
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 3 · Try Python stream engine directly with cleaned title
+  const streamBase = process.env.STREAM_BASE_URL || "http://localhost:5002";
+  try {
+    const pyRes = await axios.get(`${streamBase}/lyrics`, {
+      params: { query: cleaned },
+      timeout: 10000,
+    });
+    if (pyRes.data?.lyrics) {
+      return res.json({
+        title: pyRes.data.title || cleaned,
+        artist: pyRes.data.artist || "",
+        lyrics: pyRes.data.lyrics,
+        source: "genius-py",
+      });
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Graceful empty response (status 200 keeps console clean)
+  return res.json({
+    title: cleaned,
+    artist: "",
+    lyrics: "",
+    note: "no-lyrics-found",
+  });
 }

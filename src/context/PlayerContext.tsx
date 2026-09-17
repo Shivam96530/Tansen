@@ -148,7 +148,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               playsinline: 1,
               rel: 0,
               enablejsapi: 1,
-              origin: typeof window !== "undefined" ? window.location.origin : "",
             },
             events: {
               onReady: () => {
@@ -218,6 +217,55 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       };
     }
   }, []);
+
+  /* ---- Keep playback alive when user switches browser tabs ---- */
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (keepPlaying.current && engineRef.current === "youtube") {
+        const p = ytPlayerRef.current;
+        if (p && typeof p.playVideo === "function") {
+          try {
+            p.playVideo();
+          } catch {
+            /* ignore */
+          }
+          setTimeout(() => {
+            if (keepPlaying.current) {
+              try {
+                p.playVideo();
+              } catch {
+                /* ignore */
+              }
+            }
+          }, 150);
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("blur", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("blur", onVisibilityChange);
+    };
+  }, []);
+
+  /* ---- Background audio heartbeat to prevent Chrome tab suspension ---- */
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+    if (engine === "youtube" && isPlaying) {
+      if (a.src !== SILENT_WAV) {
+        a.src = SILENT_WAV;
+        a.loop = true;
+        a.volume = 0.01;
+      }
+      a.play().catch(() => {});
+    } else if (engine === "youtube" && !isPlaying) {
+      a.pause();
+    }
+  }, [engine, isPlaying]);
 
   /* ---- YouTube ticker for progress & duration ---- */
   useEffect(() => {

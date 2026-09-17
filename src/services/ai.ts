@@ -9,16 +9,14 @@ import type { MoodKey, Track } from "../types";
  * A local keyword engine provides the same behaviour offline.
  * ------------------------------------------------------------------ */
 
-const HF_KEY = import.meta.env.VITE_HUGGING_FACE_API_KEY ?? "";
-/* Use the HF Inference API with task-specific endpoints.
-   The /models/<name> path returns 400 on the router — use provider=hf-inference. */
-const HF_INFERENCE_BASE = "https://api-inference.huggingface.co/models";
+const HF_KEY = (import.meta.env.VITE_HUGGING_FACE_API_KEY ?? "").trim();
+const HF_INFERENCE_BASE = "https://router.huggingface.co/hf-inference/models";
 const SENTIMENT_MODEL = "distilbert-base-uncased-finetuned-sst-2-english";
 const GEN_MODEL = "openai-community/gpt2";
 
 /** POST to HF Inference API; retries once if the model is cold-starting (503 loading). */
 async function hfPost(model: string, payload: unknown): Promise<Response | null> {
-  if (!HF_KEY) return null;
+  if (!HF_KEY || HF_KEY.length < 8) return null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const res = await fetch(`${HF_INFERENCE_BASE}/${model}`, {
