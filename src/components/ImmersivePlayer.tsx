@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronDown,
@@ -56,8 +56,7 @@ export default function ImmersivePlayer() {
     secondary: "rgba(155, 140, 255, 0.2)",
   });
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [controlsVisible, setControlsVisible] = useState(true);
-  const hideTimer = useRef<number | null>(null);
+  const [lyricsFocused, setLyricsFocused] = useState(false);
 
   // Extract ambient palette when current track changes
   useEffect(() => {
@@ -65,6 +64,11 @@ export default function ImmersivePlayer() {
       extractPalette(current.thumbnail, `${current.title} ${current.artist}`).then(setPalette);
     }
   }, [current]);
+
+  // Reset lyrics focus when track changes
+  useEffect(() => {
+    setLyricsFocused(false);
+  }, [current?.id]);
 
   const lines: LrcLine[] = useMemo(
     () => (lyrics?.syncedLyrics ? parseLrc(lyrics.syncedLyrics) : []),
@@ -79,21 +83,16 @@ export default function ImmersivePlayer() {
     [lyrics?.lyrics]
   );
 
-  // Auto-hide controls after inactivity
-  const showControls = () => {
-    setControlsVisible(true);
-    if (hideTimer.current) window.clearTimeout(hideTimer.current);
-    hideTimer.current = window.setTimeout(() => {
-      if (isPlaying) setControlsVisible(false);
-    }, 4500);
-  };
+  // Only permit vanishing/focus mode when lyrics are actually available
+  const hasLyrics = Boolean(!lyricsLoading && (lines.length > 0 || Boolean(romanizedPlainLyrics)));
+  const isFocused = lyricsFocused && hasLyrics;
+  const controlsVisible = !isFocused;
 
-  useEffect(() => {
-    showControls();
-    return () => {
-      if (hideTimer.current) window.clearTimeout(hideTimer.current);
-    };
-  }, [isPlaying]);
+  const handleLyricsClick = (e: React.MouseEvent) => {
+    if (!hasLyrics) return;
+    e.stopPropagation();
+    setLyricsFocused((prev) => !prev);
+  };
 
   // Keyboard navigation & Shortcuts
   useEffect(() => {
@@ -113,7 +112,9 @@ export default function ImmersivePlayer() {
       } else if (e.key === "f" || e.key === "F") {
         toggleFullscreen();
       } else if (e.key === "Escape") {
-        if (isFullscreen) {
+        if (isFocused) {
+          setLyricsFocused(false);
+        } else if (isFullscreen) {
           document.exitFullscreen?.().catch(() => {});
         } else {
           setImmersive(false);
@@ -123,7 +124,7 @@ export default function ImmersivePlayer() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [immersive, isFullscreen, toggle, seekTo, progress, duration, setImmersive]);
+  }, [immersive, isFullscreen, isFocused, toggle, seekTo, progress, duration, setImmersive]);
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -150,13 +151,10 @@ export default function ImmersivePlayer() {
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.98 }}
       transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-      onMouseMove={showControls}
-      onTouchStart={showControls}
-      onClick={showControls}
-      className={cn(
-        "fixed inset-0 z-[100] flex flex-col justify-between overflow-hidden bg-ink text-paper select-none transition-all",
-        !controlsVisible && "cursor-none"
-      )}
+      onClick={() => {
+        if (isFocused) setLyricsFocused(false);
+      }}
+      className="fixed inset-0 z-[100] flex flex-col justify-between overflow-hidden bg-ink text-paper select-none transition-all"
     >
       {/* 2-Color Ambient Audio Bloom */}
       <div
@@ -243,7 +241,12 @@ export default function ImmersivePlayer() {
         <motion.div
           layout="position"
           transition={{ type: "spring", stiffness: 160, damping: 24, mass: 0.8 }}
-          className="flex min-h-[160px] sm:min-h-[220px] w-full max-w-3xl flex-col items-center justify-center px-4 text-center"
+          onClick={handleLyricsClick}
+          className={cn(
+            "flex min-h-[160px] sm:min-h-[220px] w-full max-w-3xl flex-col items-center justify-center px-4 text-center select-none transition-transform duration-200",
+            hasLyrics ? "cursor-pointer group" : "cursor-default"
+          )}
+          title={hasLyrics ? (isFocused ? "Click lyrics to restore controls" : "Click lyrics to focus") : undefined}
         >
           {lyricsLoading ? (
             <div className="flex flex-col items-center justify-center space-y-3 text-mist">
@@ -298,7 +301,7 @@ export default function ImmersivePlayer() {
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -8 }}
                       transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-                      className="font-display text-[clamp(2rem,5vw,3.4rem)] font-semibold leading-tight text-paper select-none text-center mx-auto"
+                      className="font-display text-[clamp(2rem,5vw,3.4rem)] font-semibold leading-tight text-paper select-none text-center mx-auto transition-transform duration-300 group-hover:scale-[1.01]"
                       style={{ textShadow: `0 0 35px ${palette.primary}` }}
                     >
                       {romanized}
@@ -327,6 +330,15 @@ export default function ImmersivePlayer() {
               <p className="mt-1 font-mono text-xs uppercase tracking-widest text-mist/40">
                 Audio playing live
               </p>
+            </div>
+          )}
+
+          {/* Subtly inform user that clicking lyrics focuses them */}
+          {hasLyrics && controlsVisible && (
+            <div className="mt-4 flex items-center justify-center pointer-events-none">
+              <span className="rounded-full bg-coal/60 px-3 py-1 font-mono text-[10px] tracking-wider text-mist/60 border border-white/5 backdrop-blur-md transition-all group-hover:text-mist group-hover:bg-coal/90">
+                Click lyrics to focus
+              </span>
             </div>
           )}
         </motion.div>
