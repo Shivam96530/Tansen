@@ -319,11 +319,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                     /* ignore */
                   }
                 } else if (event.data === 2) {
-                  // If pause was caused by document being hidden on mobile, retain wasPlayingBeforeHideRef so we auto-resume
-                  if (typeof document !== "undefined" && !document.hidden) {
+                  // If pause was caused by document being hidden on mobile, retain session so Chrome keeps notification pinned
+                  if (typeof document !== "undefined" && document.hidden && wasPlayingBeforeHideRef.current) {
+                    // Do not tear down session; Chrome keeps Android notification alive via audio anchor
+                  } else {
                     wasPlayingBeforeHideRef.current = false;
+                    setIsPlaying(false);
                   }
-                  setIsPlaying(false);
                 } else if (event.data === 0) {
                   wasPlayingBeforeHideRef.current = false;
                   handleEndedRef.current();
@@ -388,19 +390,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  /* ---- Background audio heartbeat to prevent Chrome tab suspension ---- */
+  /* ---- Background audio anchor to keep Chrome Android notification active ---- */
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
-    const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
-    if (engine === "youtube" && isPlaying) {
+    const SILENT_WAV = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
+    const active = isPlaying || wasPlayingBeforeHideRef.current;
+    if (engine === "youtube" && active) {
       if (a.src !== SILENT_WAV) {
         a.src = SILENT_WAV;
         a.loop = true;
-        a.volume = 0.01;
+        a.volume = 0.001;
       }
       a.play().catch(() => {});
-    } else if (engine === "youtube" && !isPlaying) {
+    } else if (engine === "youtube" && !active) {
       a.pause();
     }
   }, [engine, isPlaying]);
@@ -899,7 +902,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (typeof window === "undefined" || !("mediaSession" in navigator) || !current) return;
 
-    navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+    const effectivePlaying = isPlaying || Boolean(typeof document !== "undefined" && document.hidden && wasPlayingBeforeHideRef.current);
+    navigator.mediaSession.playbackState = effectivePlaying ? "playing" : "paused";
 
     if ("setPositionState" in navigator.mediaSession && duration > 0 && isFinite(duration)) {
       try {
@@ -932,6 +936,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             audioRef.current.play().catch(() => {});
           }
           setIsPlaying(true);
+          if (typeof window !== "undefined" && "mediaSession" in navigator) {
+            navigator.mediaSession.playbackState = "playing";
+          }
         },
       ],
       [
@@ -948,6 +955,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             audioRef.current.pause();
           }
           setIsPlaying(false);
+          if (typeof window !== "undefined" && "mediaSession" in navigator) {
+            navigator.mediaSession.playbackState = "paused";
+          }
         },
       ],
       ["previoustrack", () => prevRef.current()],
