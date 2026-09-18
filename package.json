@@ -7,6 +7,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview",
+    "start": "npm --prefix server start",
     "test": "node --test test/behavior.test.js"
   },
   "dependencies": {
@@ -15,7 +16,8 @@
     "lucide-react": "^1.46.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "tailwind-merge": "3.4.0"
+    "tailwind-merge": "3.4.0",
+    "tansen-api": "file:server"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.17",
