@@ -16,7 +16,7 @@ export default function TrackRow({
   index: number;
   context: Track[];
 }) {
-  const { current, isPlaying, playTrack, toggle, enqueue, setLyricsOpen } = usePlayer();
+  const { current, isPlaying, playTrack, toggle, enqueue, setImmersive } = usePlayer();
   const active = current?.id === track.id;
 
   return (
@@ -42,7 +42,14 @@ export default function TrackRow({
 
       {/* artwork */}
       <button
-        onClick={() => (active ? toggle() : playTrack(track, context))}
+        onClick={() => {
+          if (active) {
+            toggle();
+          } else {
+            playTrack(track, context);
+            setImmersive(true);
+          }
+        }}
         className="relative overflow-hidden rounded-lg"
         title={active ? (isPlaying ? "Pause" : "Play") : "Play"}
       >
@@ -58,7 +65,17 @@ export default function TrackRow({
       </button>
 
       {/* title */}
-      <div className="min-w-0">
+      <div
+        className="min-w-0 cursor-pointer"
+        onClick={() => {
+          if (active) {
+            setImmersive(true);
+          } else {
+            playTrack(track, context);
+            setImmersive(true);
+          }
+        }}
+      >
         <p className={cn("truncate text-sm font-medium", active ? "text-brass" : "text-paper")}>
           {track.title}
         </p>
@@ -80,7 +97,7 @@ export default function TrackRow({
         <button
           onClick={() => {
             if (!active) playTrack(track, context);
-            setLyricsOpen(true);
+            setImmersive(true);
           }}
           className="grid h-9 w-9 place-items-center rounded-full text-mist transition-colors hover:bg-seam hover:text-paper sm:h-8 sm:w-8"
           title="Play with lyrics"

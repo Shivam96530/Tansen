@@ -8,7 +8,7 @@ export interface Track {
   canonicalDuration?: number;
   thumbnail: string | null;
   duration: number; // seconds
-  source: "youtube" | "genius" | "demo";
+  source: "youtube" | "genius";
 }
 
 export interface LyricsResult {
@@ -45,9 +45,5 @@ export interface ChatMessage {
   tracks?: Track[];
 }
 
-export type ViewKey = "home" | "search";
+export type ViewKey = "landing" | "search" | "studio";
 
-export interface ServiceStatus {
-  api: "online" | "offline" | "checking";
-  stream: "online" | "offline" | "checking";
-}

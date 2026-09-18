@@ -1,4 +1,4 @@
-import { MOODS, MOOD_DEMO_MAP, findsDemo, DEMO_TRACKS } from "../data/demo";
+import { MOODS } from "../lib/moods";
 import { searchTracks } from "./api";
 import type { MoodKey, Track } from "../types";
 
@@ -187,15 +187,11 @@ export async function analyseMood(text: string): Promise<MoodAnalysis> {
     }
   }
 
-  if (!tracks.length) {
-    const fallbackIds = MOOD_DEMO_MAP[mood] ?? [];
-    tracks = fallbackIds.map((id) => findsDemo(id)).filter(Boolean) as Track[];
-    if (!tracks.length) tracks = DEMO_TRACKS.slice(0, 6);
-  }
-
   const limited = tracks.slice(0, 12);
   if (!reply) {
-    reply = `Here are ${limited.length} ${mood} tracks selected for how you feel.`;
+    reply = limited.length
+      ? `Here are ${limited.length} ${mood} tracks selected for how you feel.`
+      : `I tuned into ${mood}, but couldn't find matching songs right now. Try another feeling or artist.`;
   }
 
   return {

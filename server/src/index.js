@@ -84,7 +84,7 @@ if (APP_ORIGIN) {
   app.use(cors());
 }
 
-app.use(express.json());
+app.use(express.json({ limit: "64kb" }));
 
 app.get("/health", (_req, res) =>
   res.json({ status: "ok", service: "api-bridge", port: PORT })
@@ -115,9 +115,29 @@ app.get("*", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+// Final error handling middleware — never leak stack traces to client
+app.use((err, _req, res, _next) => {
+  const status = Number(err.status || err.statusCode || 500);
+  const message = status < 500 ? err.message : "Internal Server Error";
+  return res.status(status).json({ error: message });
+});
+
+const server = app.listen(PORT, () => {
   console.log(`· API bridge listening on http://localhost:${PORT}`);
   console.log(`· GET /api/search?q=       → yt-dlp (via stream engine)`);
   console.log(`· GET /api/lyrics?q=       → Genius + LRCLIB confidence-matched lyrics`);
   console.log(`· POST /api/ai/analyse    → server-side Hugging Face emotion + recommendation intelligence`);
 });
+
+function shutdown(sig) {
+  console.log(`Received ${sig}, closing server gracefully...`);
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => {
+    process.exit(1);
+  }, 8000);
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

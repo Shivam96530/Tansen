@@ -16,17 +16,25 @@ Port: 5002
 
 import os
 import re
+import sys
 import tempfile
 
+# Ensure UTF-8 output on Windows consoles to prevent UnicodeEncodeError crashes
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+import atexit
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
-from flask_cors import CORS
 import yt_dlp
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 app = Flask(__name__)
-CORS(app)
 
 import base64
 
@@ -131,6 +139,15 @@ def _init_cookie_file() -> tuple[str | None, dict]:
 
 _COOKIE_FILE, _COOKIE_INFO = _init_cookie_file()
 
+def _cleanup_cookie_file():
+    if _COOKIE_FILE and os.path.exists(_COOKIE_FILE):
+        try:
+            os.remove(_COOKIE_FILE)
+        except Exception:
+            pass
+
+atexit.register(_cleanup_cookie_file)
+
 def _cookie_opts() -> dict:
     """Return cookiefile option dict if cookies are configured."""
     return {"cookiefile": _COOKIE_FILE} if _COOKIE_FILE else {}
@@ -215,7 +232,7 @@ def health():
         status="ok",
         service="stream-engine",
         port=PORT,
-        cookies=_COOKIE_INFO,
+        cookies_configured=bool(_COOKIE_INFO.get("configured")),
     )
 
 
@@ -367,8 +384,8 @@ def lyrics():
 
 
 if __name__ == "__main__":
-    print(f"· Stream engine on http://localhost:{PORT}")
-    print("· GET /search?q=&limit=     → deduplicated results (default 8)")
-    print("· GET /get-audio-url/<id>   → direct .m4a stream URL")
-    print("· GET /lyrics?query=        → lyricsgenius text")
+    print(f"- Stream engine on http://localhost:{PORT}")
+    print("- GET /search?q=&limit=     -> deduplicated results (default 8)")
+    print("- GET /get-audio-url/<id>   -> direct .m4a stream URL")
+    print("- GET /lyrics?query=        -> lyricsgenius text")
     app.run(host="0.0.0.0", port=PORT, debug=False)

@@ -1,156 +1,211 @@
-<p align="center"><strong>TANSEN</strong></p>
-<p align="center">A full-stack music studio — stream audio, read lyrics, and discover songs by mood.</p>
+# Tansen
+
+**Stream · Read · Feel**
+
+Tansen is a full-stack, three-tier music application designed for seamless audio streaming, synchronized lyric reading with Romanization, and server-side mood intelligence.
 
 ---
 
-## Overview
+## 1. Product Overview
 
-Tansen is a three-tier music application. A React client talks to an Express
-**API bridge** (search, lyrics, and server-side AI intelligence) and a Flask **stream engine** (audio URL
-resolution via yt-dlp), while a Hugging Face–powered **Mood Studio** turns plain-language
-feelings into queued tracks securely on the server.
+Tansen features a focused, minimal three-state interface:
 
-| Capability | External source | Tooling |
-| --- | --- | --- |
-| Audio streaming | YouTube | `yt-dlp` (Flask · Gunicorn) |
-| Song search | YouTube | Ranked `yt-dlp` search — variant-filtered |
-| Lyrics | LRCLIB · Genius | Confidence-scored matching + `lyricsgenius` + `cheerio` |
-| Mood intelligence | Hugging Face | Chat completions via **server-side** Express proxy |
+1. **Minimal Landing Screen**: Fluid entry point with ambient background typography and direct access to Search or Studio mode.
+2. **Search & Studio Workspaces**:
+   - **Search Workspace**: Rapid query dispatch with debounced input, official-channel ranking, variant filtering (excluding karaoke, slowed, and compilations), and deduplicated song identities.
+   - **Studio Workspace**: Server-side Hugging Face conversational assistant that interprets emotions and situations in natural language (English, Hindi, Hinglish) and curates authentic playable tracks.
+3. **Immersive Full-Screen Player**: Typographic full-screen playback experience showing the single active timestamped lyric line in sync with the song, Romanized Hindi/Punjabi lyrics, ambient album art color bloom, instrumental gap indicators, and transport controls.
 
-## Architecture
+---
+
+## 2. Architecture & Request Flow
 
 ```
-┌────────────┐  /api/search · /api/lyrics   ┌───────────────┐
-│            │  /api/ai/analyse            │  Express API  │ :5001
-│   React    │ ───────────────────────────▶│   (bridge)    │───▶ Hugging Face (server-side)
-│  + Vite    │  /api/get-audio-url        │───────────────│
-│  :5173     │ ───────────────────────────▶│  Flask engine │ :5002 (yt-dlp)
-└────────────┘                              └───────────────┘
+┌────────────────────────────────────────────────────────┐
+│               Frontend (React 19 + Vite)               │
+│                     Port: 5173 / SPA                   │
+└───────────────────────────┬────────────────────────────┘
+                            │
+              Same-origin HTTP calls (/api/...)
+                            ▼
+┌────────────────────────────────────────────────────────┐
+│           Express API Bridge (Node.js 22)              │
+│                     Port: 5001                         │
+│  · Helmet + CSP + CORS    · Rate limiters              │
+│  · Lyrics confidence rank · Server-side AI router      │
+└─────────────┬───────────────────────────┬──────────────┘
+              │                           │
+  Server-side axios calls                 │ Server-side POST
+              ▼                           ▼
+┌───────────────────────────┐   ┌────────────────────────┐
+│   Flask Stream Engine     │   │  Hugging Face Router   │
+│       (Python 3.12)       │   │ (Qwen / Llama 3.1 API) │
+│        Port: 5002         │   │  (HF_TOKEN secret)     │
+│  · yt-dlp direct audio    │   └────────────────────────┘
+│  · YouTube search net     │
+│  · lyricsgenius fallback  │
+└───────────────────────────┘
 ```
 
-* **Streaming & search** — the engine searches YouTube (`ytsearch:`), filters
-  playlists, karaoke/live/slowed variants the user didn't ask for, ranks by
-  title similarity + official-channel signals, and collapses duplicate uploads
-  into distinct songs. Direct `.m4a` resolution is a best-effort enhancement;
-  the client falls back to the embedded YouTube player.
-* **Lyrics** — the bridge extracts the real song identity from noisy YouTube
-  titles (quoted titles, `Movie: Song` tails), tries LRCLIB's structured
-  exact match (title + artist + duration), scores Genius candidates, then
-  scrapes the *selected* Genius page. Every candidate must pass a 0.72
-  confidence threshold — wrong lyrics are never shown instead of the truth.
-* **Mood Studio** — `POST /api/ai/analyse` runs server-side Hugging Face chat
-  completions (multilingual: English, Hindi, Hinglish). The model returns
-  structured JSON (mood, emotion, reply, searchQueries); YouTube search
-  queries are executed by the backend so tracks are always real. The HF token
-  lives only on the server.
-* **Security** — Helmet + CSP, origin-restricted CORS, per-endpoint rate
-  limits, sanitized health endpoints, honest error codes. No secret is ever
-  exposed through `VITE_*` variables.
-* **Offline resilience** — every call degrades gracefully to a built-in demo
-  catalogue, so the UI is explorable before any service or key is configured.
+### Core Flows
 
-## Project layout
+- **Search Flow**:
+  - The client queries `GET /api/search?q=<query>`.
+  - Express validates query length (2–200 chars) and queries the stream engine.
+  - The Python engine pulls candidate video entries via `yt-dlp` (`extract_flat`), filtering out 2-hour jukeboxes, playlists, and non-song snippets.
+  - Express scores and ranks the candidates against official channel signals, title similarity, and requested variants.
+- **Playback & Autoplay Flow**:
+  - Clicking any search result initializes an **autoplay session** (the single clicked track begins playing).
+  - The audio engine queries `GET /api/get-audio-url/:videoId`. If `.m4a` direct stream resolution succeeds, audio plays via HTML5 `<audio>`. If datacenter IP restrictions prevent direct stream URL extraction, the player seamlessly falls back to the embedded client-side YouTube player widget, ensuring uninterrupted music.
+  - As the song finishes, related tracks are dynamically fetched based on the seed song, artist, and search context, chaining continuous music without looping.
+- **Lyrics Matching & LRC Synchronization Flow**:
+  - `GET /api/lyrics?q=&artist=&duration=` resolves structured matches via **LRCLIB** first.
+  - If unavailable, candidate hits are pulled from Genius, scored against title, artist, and duration, and scraped from the selected Genius lyric page.
+  - Any candidate scoring below the **0.72 confidence threshold** is rejected to prevent false matches (e.g., noisy "Tum Hi Ho" queries will never return "Tum Hi Tum Ho" by Rahul Dutta).
+  - Synced LRC lines are parsed with offset support and indexed using a binary search algorithm. In the Immersive Player, **only the single active lyric line** is displayed with dynamic typography bloom, while instrumental timestamps render an instrumental pause.
+- **Romanization Engine**:
+  - A zero-dependency transliterator converts Devanagari and Gurmukhi script lyrics into casual phonetic Roman text (Hinglish / chat style).
+  - English lyrics, punctuation, numbers, and Latin characters remain 100% untouched.
+- **Studio & Hugging Face Flow**:
+  - Prompts are submitted via `POST /api/ai/analyse` to Express.
+  - Express formats the prompt and executes server-side inference against Hugging Face.
+  - The model returns structured mood and search queries; the backend immediately resolves them into playable tracks.
+  - **No Hugging Face token is ever exposed to or bundled in the frontend client.**
 
+---
+
+## 3. Technology Stack
+
+- **Frontend**: React 19, TypeScript, Vite, Tailwind CSS v4, Framer Motion, Lucide React.
+- **Server API**: Express.js 4, Helmet (CSP configured), CORS, Axios, Cheerio, Express Rate Limit.
+- **Stream Engine**: Python 3.12, Flask, Gunicorn, yt-dlp, lyricsgenius, python-dotenv.
+- **Testing**: Node.js built-in test runner (`node:test`).
+
+---
+
+## 4. Environment Configuration
+
+### Frontend (`.env.local`)
+| Variable | Description | Default |
+|---|---|---|
+| `VITE_API_BASE_URL` | Express API endpoint (dev only) | `http://localhost:5001` |
+| `VITE_STREAM_BASE_URL` | Direct Python engine endpoint (dev fallback) | `http://localhost:5002` |
+
+> [!NOTE]
+> In production builds, `VITE_API_BASE_URL` defaults to empty string `""`, ensuring all requests use same-origin relative paths (`/api/...`). No secrets belong in the frontend!
+
+### Express Server (`server/.env`)
+| Variable | Description | Required |
+|---|---|---|
+| `PORT` | Listening port for Express | No (default `5001`) |
+| `NODE_ENV` | Environment mode | Yes (`production` / `development`) |
+| `STREAM_BASE_URL` | URL of the internal Python service | Yes (e.g., `http://localhost:5002` or Render internal URL) |
+| `GENIUS_API_KEY` | Genius API Client Token for search & metadata | Recommended |
+| `HF_TOKEN` | Hugging Face user access token (`hf_...`) | Recommended for AI Studio |
+| `HF_CHAT_MODEL` | Model served via `router.huggingface.co/v1` | No (default: `Qwen/Qwen3-32B:fastest`) |
+| `APP_ORIGIN` | Allowed CORS origin(s) | No (allow same-origin or comma-separated URLs) |
+
+### Python Engine (`python/.env`)
+| Variable | Description | Required |
+|---|---|---|
+| `PORT` | Listening port for Flask | No (default `5002`) |
+| `GENIUS_ACCESS_TOKEN` | Access token for `lyricsgenius` fallback | Recommended |
+| `YOUTUBE_COOKIES` | Raw Netscape cookie text or base64 string | Optional (for bot-check bypass on cloud servers) |
+
+---
+
+## 5. Local Setup
+
+### Prerequisites
+- Node.js `22.x`
+- Python `3.12.x`
+- Git
+
+### Windows Quickstart (One Command)
+A convenience batch file is provided to start all three tiers concurrently in a single terminal:
+```bat
+run.bat
 ```
-├── src/                  React 19 client (Vite, Tailwind v4, framer-motion)
-│   ├── components/       Player bar, lyrics panel, Mood Studio, views
-│   ├── context/          PlayerContext — queue, seek, panels, health checks
-│   └── services/         api.ts (search/stream/lyrics) · ai.ts (server-backed mood)
-├── server/               Express API bridge (:5001)
-│   └── src/
-│       ├── controllers/  searchController.js · lyricsController.js · aiController.js
-│       ├── lib/          rateLimit.js
-│       └── routes/       api.js
-└── python/               Flask stream engine (:5002)
-    └── audio_service.py  search · get-audio-url · lyrics
-```
 
-## Getting started
+### Manual Setup (macOS / Linux / Windows)
 
-### 1 · Stream engine (Python 3.12 recommended)
+1. **Stream Engine (Python)**:
+   ```bash
+   cd python
+   python -m venv .venv
+   # Windows: .venv\Scripts\activate | macOS/Linux: source .venv/bin/activate
+   pip install -r requirements.txt
+   cp .env.example .env
+   python audio_service.py
+   ```
+
+2. **API Bridge (Express)**:
+   ```bash
+   cd server
+   npm install
+   cp .env.example .env
+   npm run dev
+   ```
+
+3. **Frontend Client (Vite)**:
+   ```bash
+   npm install
+   cp .env.local.example .env.local
+   npm run dev
+   ```
+   Open `http://localhost:5173` in your browser.
+
+---
+
+## 6. Deployment (Render Blueprint)
+
+The repository includes a ready-to-deploy [`render.yaml`](file:///d:/Attachments/Tansen/render.yaml) specification configured for Render:
+
+- **Node Web Service (`tansen`)**:
+  - Build: `npm ci && npm run build && npm --prefix server ci --omit=dev`
+  - Start: `npm --prefix server start`
+  - Health check: `/health`
+- **Python Web Service (`tansen-stream`)**:
+  - Build: `pip install --upgrade pip && pip install -r requirements.txt`
+  - Start: `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 audio_service:app`
+  - Health check: `/health`
+
+---
+
+## 7. Verification & Quality Commands
 
 ```bash
-cd python
-python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-cp .env.example .env                                 # add GENIUS_ACCESS_TOKEN
-python audio_service.py                              # → http://localhost:5002
+# 1. Run pure algorithmic behavior test suite (LRC, Romanize, Dedupe, Confidence)
+npm test
+
+# 2. Type-check TypeScript
+npx tsc --noEmit
+
+# 3. Production Vite build
+npm run build
+
+# 4. Verify Express JavaScript syntax
+node --check server/src/index.js
+
+# 5. Compile check Python service
+python -m compileall python
+
+# 6. Audit dependencies for security vulnerabilities
+npm audit
+npm --prefix server audit
 ```
 
-### 2 · API bridge (Node 20+)
+---
 
-```bash
-cd server
-npm install
-cp .env.example .env                                 # add GENIUS_API_KEY + HF_TOKEN
-npm run dev                                          # → http://localhost:5001
-```
+## 8. Provider Limitations & Security Notes
 
-### 3 · Client
+- **yt-dlp on Cloud IPs**: Render and other public cloud providers' datacenter IP ranges may occasionally encounter YouTube bot verification challenges. Tansen mitigates this by providing dual playback: direct `.m4a` audio streaming when available, with automatic client-side YouTube player fallback so tracks continue playing regardless of cloud IP blocks.
+- **Genius Lyrics**: Genius API provides metadata and URL endpoints; full lyric texts are scraped on-demand from selected canonical pages with a 0.72 confidence requirement.
+- **LRCLIB Coverage**: LRCLIB provides crowd-sourced, timestamped line synchronization. Untimed lyrics gracefully fall back to reading mode.
+- **Secret Rotation**: Never commit `.env` or paste tokens into client code. Hugging Face tokens and Genius API keys must reside exclusively on the server. If any token is ever accidentally logged, immediately revoke and re-issue it via the provider's dashboard.
 
-```bash
-npm install
-cp .env.local.example .env.local                     # dev endpoints only — no secrets
-npm run dev                                          # → http://localhost:5173
-```
+---
 
-## Production (Render)
+## 9. License
 
-Deploy both services from `render.yaml` (New → Blueprint):
-
-| Service | Setting | Value |
-| --- | --- | --- |
-| **Node** | Build Command | `npm ci && npm run build && npm --prefix server ci --omit=dev` |
-| | Start Command | `npm --prefix server start` |
-| | Health Check | `/health` |
-| **Python** | Root Directory | `python` |
-| | Build Command | `pip install --upgrade pip && pip install -r requirements.txt` |
-| | Start Command | `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 audio_service:app` |
-| | Health Check | `/health` |
-
-On the Node service set `STREAM_BASE_URL` to the Python service's public URL
-(free tier) or its internal `host:port` over Render private networking (paid).
-
-## Environment variables
-
-| File | Variable | Description |
-| --- | --- | --- |
-| `server/.env` | `PORT` | API bridge port (default `5001`) |
-| `server/.env` | `GENIUS_API_KEY` | Genius key (canonical metadata + lyrics scrape) |
-| `server/.env` | `HF_TOKEN` | **Server-only** Hugging Face token for `/api/ai/analyse` |
-| `server/.env` | `HF_CHAT_MODEL` | Chat model (default `Qwen/Qwen3-32B:fastest`) |
-| `server/.env` | `STREAM_BASE_URL` | Stream engine URL (default `http://localhost:5002`) |
-| `server/.env` | `APP_ORIGIN` | Optional explicit CORS origin |
-| `python/.env` | `PORT` | Stream engine port (default `5002`) |
-| `python/.env` | `GENIUS_ACCESS_TOKEN` | Genius token for `lyricsgenius` |
-| `python/.env` | `YOUTUBE_COOKIES` | Base64 Netscape cookies for cloud bot-checks |
-| `.env.local` | `VITE_API_BASE_URL` | Dev only (default `http://localhost:5001`) |
-| `.env.local` | `VITE_STREAM_BASE_URL` | Dev only (default `http://localhost:5002`) |
-
-> **Never** put secrets in `VITE_*` variables — they are compiled into the public browser bundle.
-
-## API reference
-
-**Express · :5001** (rate-limited)
-
-| Route | Description |
-| --- | --- |
-| `GET /health` | Heartbeat |
-| `GET /api/stream-health` | Stream-engine heartbeat (proxied) |
-| `GET /api/search?q=&limit=` | Ranked, variant-filtered YouTube search |
-| `GET /api/lyrics?q=&artist=&channel=&duration=` | Confidence-matched lyrics (LRCLIB → Genius) |
-| `GET /api/get-audio-url/:videoId` | Direct stream URL (honest 502 on failure) |
-| `POST /api/ai/analyse` | Server-side HF mood/chat intelligence |
-
-**Flask · :5002**
-
-| Route | Description |
-| --- | --- |
-| `GET /health` | Sanitized heartbeat |
-| `GET /search?q=&limit=` | Ranked distinct songs (id, title, channel, score) |
-| `GET /get-audio-url/<video_id>` | Direct `.m4a` stream URL (best effort) |
-| `GET /lyrics?query=` | Cleaned lyrics via `lyricsgenius` |
-
-## License
-
-MIT
+This project is open source and available under the [MIT License](LICENSE).

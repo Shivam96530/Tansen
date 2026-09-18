@@ -8,9 +8,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { checkHealth, getAudioUrl, getLyrics, getRelatedTracks, searchTracks } from "../services/api";
-import { dedupeTracks, isSameSong, songKey } from "../lib/dedupe";
-import type { LyricsResult, ServiceStatus, Track, ViewKey } from "../types";
+import { getAudioUrl, getLyrics, getRelatedTracks, searchTracks } from "../services/api";
+import { dedupeTracks, songKey } from "../lib/dedupe";
+import type { LyricsResult, Track, ViewKey } from "../types";
 
 declare global {
   interface Window {
@@ -22,21 +22,24 @@ declare global {
 type RepeatMode = "off" | "all" | "one";
 
 interface PlayerState {
-  // library
-  view: ViewKey;
-  setView: (v: ViewKey) => void;
+  // Navigation & View Mode
+  mode: ViewKey;
+  setMode: (m: ViewKey) => void;
+  immersive: boolean;
+  setImmersive: (b: boolean) => void;
+  navigateBack: () => void;
   query: string;
   search: (q: string) => Promise<void>;
+  clearSearch: () => void;
   results: Track[];
   searching: boolean;
 
-  // queue & playback
+  // Queue & Playback
   queue: Track[];
   queueIndex: number;
   current: Track | null;
   isPlaying: boolean;
-  isLoading: boolean; // resolving stream url
-  simulated: boolean; // offline demo playback
+  isLoading: boolean;
   progress: number;
   duration: number;
   volume: number;
@@ -46,7 +49,7 @@ interface PlayerState {
   radioLoading: boolean;
   toggleRadio: () => void;
 
-  playTrack: (track: Track, queue?: Track[]) => void;
+  playTrack: (track: Track, queue?: Track[], seedQuery?: string) => void;
   toggle: () => void;
   next: () => void;
   prev: () => void;
@@ -55,19 +58,11 @@ interface PlayerState {
   cycleRepeat: () => void;
   toggleShuffle: () => void;
   enqueue: (t: Track) => void;
+  dismissTrack: () => void;
 
-  // panels
-  lyricsOpen: boolean;
-  setLyricsOpen: (b: boolean) => void;
-  aiOpen: boolean;
-  setAiOpen: (b: boolean) => void;
-
-  // lyrics
+  // Lyrics
   lyrics: LyricsResult | null;
   lyricsLoading: boolean;
-
-  // services
-  status: ServiceStatus;
 }
 
 const Ctx = createContext<PlayerState | null>(null);
@@ -78,8 +73,39 @@ export const usePlayer = () => {
   return ctx;
 };
 
+function parsePathToRoute(pathname: string): { mode: ViewKey; immersive: boolean } {
+  const norm = (pathname || "/").toLowerCase();
+  if (norm === "/player") {
+    return { mode: "landing", immersive: false };
+  }
+  if (norm === "/search") {
+    return { mode: "search", immersive: false };
+  }
+  if (norm === "/mood" || norm === "/studio") {
+    return { mode: "studio", immersive: false };
+  }
+  return { mode: "landing", immersive: false };
+}
+
+function modeToPath(m: ViewKey): string {
+  if (m === "search") return "/search";
+  if (m === "studio") return "/mood";
+  return "/";
+}
+
 export function PlayerProvider({ children }: { children: ReactNode }) {
-  const [view, setView] = useState<ViewKey>("home");
+  const [mode, setModeState] = useState<ViewKey>(() => {
+    return parsePathToRoute(typeof window !== "undefined" ? window.location.pathname : "/").mode;
+  });
+  const [immersive, setImmersiveState] = useState<boolean>(() => {
+    return parsePathToRoute(typeof window !== "undefined" ? window.location.pathname : "/").immersive;
+  });
+
+  const modeRef = useRef<ViewKey>(mode);
+  modeRef.current = mode;
+  const immersiveRef = useRef<boolean>(immersive);
+  immersiveRef.current = immersive;
+
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Track[]>([]);
   const [searching, setSearching] = useState(false);
@@ -89,7 +115,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [current, setCurrent] = useState<Track | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [simulated, setSimulated] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolumeState] = useState(0.85);
@@ -98,15 +123,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [radio, setRadio] = useState(true);
   const [radioLoading, setRadioLoading] = useState(false);
 
-  const [lyricsOpen, setLyricsOpen] = useState(false);
-  const [aiOpen, setAiOpen] = useState(false);
   const [lyrics, setLyrics] = useState<LyricsResult | null>(null);
   const [lyricsLoading, setLyricsLoading] = useState(false);
 
-  const [status, setStatus] = useState<ServiceStatus>({ api: "checking", stream: "checking" });
-
-  const [engine, setEngine] = useState<"audio" | "youtube" | "sim">("audio");
-  const engineRef = useRef<"audio" | "youtube" | "sim">("audio");
+  const [engine, setEngine] = useState<"audio" | "youtube">("audio");
+  const engineRef = useRef<"audio" | "youtube">("audio");
   engineRef.current = engine;
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -122,14 +143,122 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const queueRef = useRef(queue);
   const idxRef = useRef(queueIndex);
   const radioRef = useRef(radio);
-  const heardRef = useRef<Set<string>>(new Set()); // song identities played this session
+  const heardRef = useRef<Set<string>>(new Set());
   const radioBusy = useRef(false);
+  const flowRef = useRef<"queue" | "autoplay">("autoplay");
+  const seedQueryRef = useRef<string>("");
+
   repeatRef.current = repeat;
   shuffleRef.current = shuffle;
   queueRef.current = queue;
   idxRef.current = queueIndex;
   radioRef.current = radio;
   keepPlaying.current = isPlaying;
+
+  /* ---- Route & History synchronization ---- */
+  const clearSearch = useCallback(() => {
+    setQuery("");
+    setResults([]);
+    setSearching(false);
+  }, []);
+
+  const setMode = useCallback((m: ViewKey) => {
+    const targetPath = modeToPath(m);
+    if (typeof window !== "undefined") {
+      if (window.location.pathname.toLowerCase() !== targetPath) {
+        window.history.pushState({ tansen: true, mode: m, immersive: false }, "", targetPath);
+      }
+    }
+    if (m === "landing") {
+      clearSearch();
+    }
+    setModeState(m);
+    setImmersiveState(false);
+  }, [clearSearch]);
+
+  const setImmersive = useCallback((b: boolean) => {
+    if (typeof window === "undefined") {
+      setImmersiveState(b);
+      return;
+    }
+
+    if (b) {
+      if (window.location.pathname.toLowerCase() !== "/player") {
+        window.history.pushState(
+          { tansen: true, mode: modeRef.current, immersive: true },
+          "",
+          "/player"
+        );
+      }
+      setImmersiveState(true);
+    } else {
+      if (window.location.pathname.toLowerCase() === "/player") {
+        if (window.history.state && !window.history.state.isRoot && window.history.length > 1) {
+          window.history.back();
+          return;
+        }
+        const targetPath = modeToPath(modeRef.current);
+        window.history.replaceState(
+          { tansen: true, mode: modeRef.current, immersive: false },
+          "",
+          targetPath
+        );
+      }
+      setImmersiveState(false);
+    }
+  }, []);
+
+  const navigateBack = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (window.history.state && !window.history.state.isRoot && window.history.length > 1) {
+      window.history.back();
+    } else {
+      setMode("landing");
+    }
+  }, [setMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // Direct cold-load on /player redirects to / cleanly
+    if (window.location.pathname.toLowerCase() === "/player") {
+      window.history.replaceState(
+        { tansen: true, mode: "landing", immersive: false, isRoot: true },
+        "",
+        "/"
+      );
+    } else if (!window.history.state || !window.history.state.tansen) {
+      const init = parsePathToRoute(window.location.pathname);
+      window.history.replaceState(
+        { tansen: true, mode: init.mode, immersive: init.immersive, isRoot: true },
+        "",
+        window.location.pathname
+      );
+    }
+
+    const handlePopState = (e: PopStateEvent) => {
+      const path = window.location.pathname.toLowerCase();
+      if (path === "/player") {
+        setImmersiveState(true);
+        if (e.state?.mode) {
+          setModeState(e.state.mode);
+        }
+      } else if (path === "/search") {
+        setImmersiveState(false);
+        setModeState("search");
+      } else if (path === "/mood" || path === "/studio") {
+        setImmersiveState(false);
+        setModeState("studio");
+      } else {
+        setImmersiveState(false);
+        setModeState("landing");
+        clearSearch();
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [clearSearch]);
 
   /* ---- YouTube player initialization ---- */
   useEffect(() => {
@@ -177,7 +306,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                 }
               },
               onStateChange: (event: any) => {
-                // YT.PlayerState: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
                 if (event.data === 1) {
                   setIsPlaying(true);
                   setIsLoading(false);
@@ -216,7 +344,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         initYT();
       };
     }
-  }, []);
+  }, [volume]);
 
   /* ---- Keep playback alive when user switches browser tabs ---- */
   useEffect(() => {
@@ -267,43 +395,61 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, [engine, isPlaying]);
 
-  /* ---- YouTube ticker for progress & duration ---- */
+  /* ---- High-resolution playback ticker (50ms / 20Hz) for frame-accurate sync ---- */
   useEffect(() => {
-    if (engine !== "youtube" || !isPlaying) return;
+    if (!isPlaying) return;
     const interval = setInterval(() => {
-      const p = ytPlayerRef.current;
-      if (!p || typeof p.getCurrentTime !== "function") return;
-      try {
-        const cur = p.getCurrentTime() || 0;
-        const dur = p.getDuration() || 0;
-        setProgress(cur);
-        if (dur && isFinite(dur) && dur > 0) {
-          setDuration(dur);
+      if (engineRef.current === "youtube") {
+        const p = ytPlayerRef.current;
+        if (!p || typeof p.getCurrentTime !== "function") return;
+        try {
+          const cur = p.getCurrentTime() || 0;
+          const dur = p.getDuration() || 0;
+          if (isFinite(cur)) setProgress(cur);
+          if (dur && isFinite(dur) && dur > 0) {
+            setDuration(dur);
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
+      } else if (engineRef.current === "audio") {
+        const a = audioRef.current;
+        if (!a) return;
+        const cur = a.currentTime || 0;
+        if (isFinite(cur)) setProgress(cur);
+        if (a.duration && isFinite(a.duration) && a.duration > 0) {
+          setDuration(a.duration);
+        }
       }
-    }, 250);
+    }, 50);
     return () => clearInterval(interval);
-  }, [engine, isPlaying]);
+  }, [isPlaying]);
 
-  /* ---- audio element ---- */
+  /* ---- Audio element lifecycle ---- */
   useEffect(() => {
     const audio = new Audio();
     audio.preload = "auto";
     audio.volume = volume;
     audioRef.current = audio;
+    if (typeof window !== "undefined") {
+      (window as any).__TANSEN_AUDIO__ = audio;
+    }
 
     const onTime = () => {
       if (engineRef.current !== "audio") return;
       setProgress(audio.currentTime || 0);
-      setDuration(audio.duration && isFinite(audio.duration) ? audio.duration : 0);
+      if (audio.duration && isFinite(audio.duration)) {
+        setDuration(audio.duration);
+      }
     };
     const onEnd = () => {
-      if (engineRef.current === "audio") handleEndedRef.current();
+      if (engineRef.current !== "audio") return;
+      handleEndedRef.current();
     };
     const onErr = () => {
-      if (engineRef.current === "audio") setIsLoading(false);
+      if (engineRef.current !== "audio") return;
+      setIsLoading(false);
+      setIsPlaying(false);
     };
 
     audio.addEventListener("timeupdate", onTime);
@@ -311,6 +457,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audio.addEventListener("ended", onEnd);
     audio.addEventListener("error", onErr);
     return () => {
+      if (typeof window !== "undefined" && (window as any).__TANSEN_AUDIO__ === audio) {
+        delete (window as any).__TANSEN_AUDIO__;
+      }
       audio.pause();
       audio.src = "";
       audio.removeEventListener("timeupdate", onTime);
@@ -318,36 +467,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       audio.removeEventListener("ended", onEnd);
       audio.removeEventListener("error", onErr);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /* ---- simulated engine (demo tracks / offline) ---- */
-  useEffect(() => {
-    if (!simulated || !isPlaying) return;
-    const iv = setInterval(() => {
-      setProgress((p) => {
-        const d = durationRef.current;
-        if (p + 0.25 >= d) {
-          clearInterval(iv);
-          setTimeout(() => handleEndedRef.current(), 320);
-          return d;
-        }
-        return p + 0.25;
-      });
-    }, 250);
-    return () => clearInterval(iv);
-  }, [simulated, isPlaying]);
+  }, [volume]);
 
   const durationRef = useRef(0);
   durationRef.current = duration;
-
-  const startSim = useCallback((len: number) => {
-    setEngine("sim");
-    setSimulated(true);
-    setDuration(len || 210);
-    setProgress(0);
-    setIsPlaying(true);
-  }, []);
 
   const stopAudio = useCallback(() => {
     const a = audioRef.current;
@@ -369,16 +492,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const loadAndPlay = useCallback(
     async (track: Track) => {
       const id = ++loadId.current;
-      heardRef.current.add(songKey(track)); // remember the song, not the upload
+      heardRef.current.add(songKey(track));
       setCurrent(track);
       setIsLoading(true);
       setLyrics(null);
       setProgress(0);
       setDuration(track.duration || 0);
       stopAudio();
-      setSimulated(false);
 
-      // lyrics (parallel, cached)
+      // Lyrics (parallel, cached)
       setLyricsLoading(true);
       const cached = lyricsCache.current.get(track.id);
       if (cached) {
@@ -393,88 +515,97 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           .finally(() => loadId.current === id && setLyricsLoading(false));
       }
 
-      if (track.source !== "demo") {
-        // Attempt 1: Direct stream URL (.m4a)
-        const url = await getAudioUrl(track.id);
-        if (loadId.current !== id) return; // stale
+      // Strategy 1: Direct stream URL (.m4a)
+      const url = await getAudioUrl(track.id);
+      if (loadId.current !== id) return; // Stale request
 
-        if (url && audioRef.current) {
-          setEngine("audio");
-          setIsLoading(false);
-          const a = audioRef.current;
-          a.src = url;
-          a.volume = volume;
-          try {
-            await a.play();
-            setIsPlaying(true);
-            return;
-          } catch {
-            /* fall through to YouTube client-side player */
-          }
-        }
-
-        // Attempt 2: YouTube Client-side IFrame Player
-        // Resolves YouTube streams directly inside the user's browser, bypassing
-        // datacenter bot-detection blocks completely on cloud hosts like Render.
-        const isYT = !track.id.startsWith("demo-") && track.id.length >= 8;
-        if (isYT) {
-          setEngine("youtube");
-          const playYt = () => {
-            const p = ytPlayerRef.current;
-            if (p && typeof p.loadVideoById === "function") {
-              try {
-                p.loadVideoById(track.id);
-                p.unMute();
-                p.setVolume(Math.round(volume * 100));
-                p.playVideo();
-                setIsLoading(false);
-                setIsPlaying(true);
-                return true;
-              } catch {
-                return false;
-              }
-            }
-            pendingTrackIdRef.current = track.id;
-            return false;
-          };
-
-          if (playYt()) return;
-
-          // If YT player is initializing, wait briefly and retry
-          setTimeout(() => {
-            if (loadId.current === id && playYt()) {
-              setIsPlaying(true);
-            }
-          }, 600);
+      if (url && audioRef.current) {
+        setEngine("audio");
+        setIsLoading(false);
+        const a = audioRef.current;
+        a.src = url;
+        a.volume = volume;
+        try {
+          await a.play();
+          setIsPlaying(true);
           return;
+        } catch {
+          /* Fall through to YouTube client-side player */
         }
+      }
+
+      // Strategy 2: YouTube Client-side IFrame Player
+      const isYT = Boolean(track.id && track.id.length >= 8);
+      if (isYT) {
+        setEngine("youtube");
+        const playYt = () => {
+          const p = ytPlayerRef.current;
+          if (p && typeof p.loadVideoById === "function") {
+            try {
+              p.loadVideoById(track.id);
+              p.unMute();
+              p.setVolume(Math.round(volume * 100));
+              p.playVideo();
+              setIsLoading(false);
+              setIsPlaying(true);
+              return true;
+            } catch {
+              return false;
+            }
+          }
+          pendingTrackIdRef.current = track.id;
+          return false;
+        };
+
+        if (playYt()) return;
+
+        // If YT player is still initializing, wait briefly and retry
+        setTimeout(() => {
+          if (loadId.current === id && playYt()) {
+            setIsPlaying(true);
+          }
+        }, 600);
+        return;
       }
 
       if (loadId.current !== id) return;
       setIsLoading(false);
-      startSim(track.duration || 210);
+      setIsPlaying(false);
     },
-    [stopAudio, startSim, volume]
+    [stopAudio, volume]
   );
 
+  const dismissTrack = useCallback(() => {
+    stopAudio();
+    setCurrent(null);
+    setIsPlaying(false);
+    setIsLoading(false);
+    setProgress(0);
+    setDuration(0);
+    setLyrics(null);
+    setImmersive(false);
+  }, [stopAudio, setImmersive]);
+
   const playTrack = useCallback(
-    (track: Track, list?: Track[]) => {
-      if (list && list.length) {
-        // Collapse duplicate uploads so "next" is never the same song again,
-        // but always keep the track the listener actually clicked.
+    (track: Track, list?: Track[], seedQuery?: string) => {
+      if (list && list.length > 1) {
+        // Explicit list playback
+        flowRef.current = "queue";
+        seedQueryRef.current = "";
         const clean = dedupeTracks([track, ...list.filter((t) => t.id !== track.id)]);
         const ordered = [track, ...clean.filter((t) => t.id !== track.id)];
         setQueue(ordered);
         queueRef.current = ordered;
         setQueueIndex(0);
       } else {
-        setQueue((q) => {
-          if (q.some((t) => t.id === track.id)) return q;
-          const next = [...q, track];
-          setQueueIndex(next.length - 1);
-          return next;
-        });
+        // Single click — YouTube-style autoplay session
+        flowRef.current = "autoplay";
+        seedQueryRef.current = (seedQuery ?? "").trim();
+        setQueue([track]);
+        queueRef.current = [track];
+        setQueueIndex(0);
       }
+      setImmersive(true);
       loadAndPlay(track);
     },
     [loadAndPlay]
@@ -483,32 +614,33 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const stepTo = useCallback(
     (idx: number) => {
       const q = queueRef.current;
-      const t = q[idx];
-      if (!t) return;
+      if (idx < 0 || idx >= q.length) return;
       setQueueIndex(idx);
-      loadAndPlay(t);
+      idxRef.current = idx;
+      loadAndPlay(q[idx]);
     },
     [loadAndPlay]
   );
 
-  /** Next index whose song differs from what is playing (skips re-uploads). */
-  const nextDistinctIndex = useCallback((from: number) => {
+  const nextDistinctIndex = useCallback((fromIndex: number): number => {
     const q = queueRef.current;
-    const now = q[idxRef.current] ?? null;
-    for (let i = from; i < q.length; i++) {
-      if (!isSameSong(q[i], now)) return i;
+    const cur = q[idxRef.current];
+    for (let i = fromIndex; i < q.length; i++) {
+      if (!cur || songKey(q[i]) !== songKey(cur)) return i;
     }
     return -1;
   }, []);
 
-  /** Extend the queue with related songs, Spotify-style autoplay radio. */
-  const extendWithRadio = useCallback(async () => {
-    const seed = queueRef.current[idxRef.current] ?? null;
-    if (!seed || radioBusy.current) return false;
+  const extendWithRadio = useCallback(async (): Promise<boolean> => {
+    if (radioBusy.current) return false;
+    const q = queueRef.current;
+    const seed = q[idxRef.current] ?? q[q.length - 1];
+    if (!seed) return false;
+
     radioBusy.current = true;
     setRadioLoading(true);
     try {
-      const picks = await getRelatedTracks(seed, heardRef.current, 4);
+      const picks = await getRelatedTracks(seed, heardRef.current, 4, seedQueryRef.current);
       if (!picks.length) return false;
       const merged = [...queueRef.current, ...picks];
       queueRef.current = merged;
@@ -516,6 +648,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const target = merged.length - picks.length;
       setQueueIndex(target);
       idxRef.current = target;
+      flowRef.current = "autoplay";
       loadAndPlay(picks[0]);
       return true;
     } catch {
@@ -529,95 +662,97 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const next = useCallback(() => {
     const q = queueRef.current;
     if (!q.length) return;
-    if (shuffleRef.current && q.length > 1) {
-      const options = q
-        .map((_, i) => i)
-        .filter((i) => i !== idxRef.current && !isSameSong(q[i], q[idxRef.current]));
-      if (options.length) {
-        stepTo(options[Math.floor(Math.random() * options.length)]);
+
+    if (shuffleRef.current && q.length > 2) {
+      const remaining = q
+        .map((t, i) => ({ t, i }))
+        .filter((x) => x.i !== idxRef.current && songKey(x.t) !== songKey(q[idxRef.current]));
+      if (remaining.length) {
+        const pick = remaining[Math.floor(Math.random() * remaining.length)];
+        stepTo(pick.i);
         return;
       }
     }
+
     const n = nextDistinctIndex(idxRef.current + 1);
     if (n !== -1) {
       stepTo(n);
       return;
     }
-    if (repeatRef.current === "all") {
+    if (repeatRef.current === "all" && flowRef.current === "queue") {
       stepTo(0);
       return;
     }
-    // Queue exhausted → radio takes over with fresh songs.
-    if (radioRef.current) void extendWithRadio();
+    if (radioRef.current || flowRef.current === "autoplay") void extendWithRadio();
   }, [stepTo, nextDistinctIndex, extendWithRadio]);
 
   const prev = useCallback(() => {
-    if (progress > 4) {
+    if (progress > 3) {
       seekToRef.current(0);
       return;
     }
     const q = queueRef.current;
-    if (!q.length) return;
-    const p = idxRef.current - 1;
-    if (p >= 0) stepTo(p);
-    else if (repeatRef.current === "all") stepTo(q.length - 1);
-    else seekToRef.current(0);
-  }, [progress]);
+    const cur = q[idxRef.current];
+    for (let i = idxRef.current - 1; i >= 0; i--) {
+      if (!cur || songKey(q[i]) !== songKey(cur)) {
+        stepTo(i);
+        return;
+      }
+    }
+    seekToRef.current(0);
+  }, [progress, stepTo]);
 
   const handleEnded = useCallback(() => {
     if (repeatRef.current === "one") {
       seekToRef.current(0);
-      setIsPlaying(true);
       if (engineRef.current === "youtube") {
         try {
+          ytPlayerRef.current?.seekTo?.(0, true);
           ytPlayerRef.current?.playVideo?.();
         } catch {
           /* ignore */
         }
-      } else if (engineRef.current === "audio" && audioRef.current && !simulated) {
+      } else if (engineRef.current === "audio" && audioRef.current) {
         audioRef.current.play().catch(() => {});
       }
       return;
     }
+
     const q = queueRef.current;
     const hasNext = shuffleRef.current
       ? q.length > 1
       : nextDistinctIndex(idxRef.current + 1) !== -1;
     if (hasNext) {
       next();
-    } else if (repeatRef.current === "all" && q.length) {
+    } else if (repeatRef.current === "all" && q.length > 1 && flowRef.current === "queue") {
       stepTo(0);
-    } else if (radioRef.current) {
-      // Nothing distinct left — pull related songs and keep the music going.
+    } else if (radioRef.current || flowRef.current === "autoplay") {
       void extendWithRadio().then((ok) => {
         if (!ok) {
           setIsPlaying(false);
-          setProgress(durationRef.current);
+          setProgress(0);
         }
       });
     } else {
       setIsPlaying(false);
-      setProgress(durationRef.current);
+      setProgress(0);
     }
-  }, [next, simulated, stepTo, nextDistinctIndex, extendWithRadio]);
+  }, [next, stepTo, nextDistinctIndex, extendWithRadio]);
 
-  const seekTo = useCallback(
-    (sec: number) => {
-      const d = durationRef.current || 0;
-      const v = Math.max(0, Math.min(sec, d));
-      setProgress(v);
-      if (engineRef.current === "youtube") {
-        try {
-          ytPlayerRef.current?.seekTo?.(v, true);
-        } catch {
-          /* ignore */
-        }
-      } else if (engineRef.current === "audio" && audioRef.current) {
-        audioRef.current.currentTime = v;
+  const seekTo = useCallback((sec: number) => {
+    const d = durationRef.current || 0;
+    const target = isFinite(sec) ? Math.max(0, Math.min(sec, d > 0 ? d : sec)) : 0;
+    setProgress(target);
+    if (engineRef.current === "youtube") {
+      try {
+        ytPlayerRef.current?.seekTo?.(target, true);
+      } catch {
+        /* ignore */
       }
-    },
-    []
-  );
+    } else if (engineRef.current === "audio" && audioRef.current) {
+      audioRef.current.currentTime = target;
+    }
+  }, []);
 
   const seekToRef = useRef(seekTo);
   seekToRef.current = seekTo;
@@ -626,10 +761,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const toggle = useCallback(() => {
     if (!current) return;
-    if (engineRef.current === "sim") {
-      setIsPlaying((p) => !p);
-      return;
-    }
     if (engineRef.current === "youtube") {
       const yt = ytPlayerRef.current;
       if (!yt) return;
@@ -656,9 +787,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       a.pause();
       setIsPlaying(false);
     } else {
-      a.play().then(() => setIsPlaying(true)).catch(() => simulated && setIsPlaying(true));
+      a.play().then(() => setIsPlaying(true)).catch(() => {});
     }
-  }, [current, isPlaying, simulated]);
+  }, [current, isPlaying]);
 
   const setVolume = useCallback((v: number) => {
     const c = Math.max(0, Math.min(1, v));
@@ -683,16 +814,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setQueueIndex((i) => (i === -1 ? 0 : i));
   }, []);
 
-  /* ---- search ---- */
+  /* ---- Search ---- */
   const search = useCallback(async (q: string) => {
     setQuery(q);
     const trimmed = q.trim();
     if (!trimmed) {
       setResults([]);
-      setView("home");
       return;
     }
-    setView("search");
     setSearching(true);
     try {
       const found = await searchTracks(trimmed);
@@ -702,36 +831,80 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  /* ---- health ---- */
-  useEffect(() => {
-    let mounted = true;
-    const run = async () => {
-      const s = await checkHealth();
-      if (mounted) setStatus(s);
-    };
-    run();
-    const iv = setInterval(run, 30000);
-    return () => {
-      mounted = false;
-      clearInterval(iv);
-    };
-  }, []);
-
   const value = useMemo<PlayerState>(
     () => ({
-      view, setView, query, search, results, searching,
-      queue, queueIndex, current, isPlaying, isLoading, simulated,
-      progress, duration, volume, repeat, shuffle, radio, radioLoading, toggleRadio,
-      playTrack, toggle, next, prev, seekTo, setVolume, cycleRepeat, toggleShuffle, enqueue,
-      lyricsOpen, setLyricsOpen, aiOpen, setAiOpen,
-      lyrics, lyricsLoading, status,
+      mode,
+      setMode,
+      immersive,
+      setImmersive,
+      navigateBack,
+      query,
+      search,
+      clearSearch,
+      results,
+      searching,
+      queue,
+      queueIndex,
+      current,
+      isPlaying,
+      isLoading,
+      progress,
+      duration,
+      volume,
+      repeat,
+      shuffle,
+      radio,
+      radioLoading,
+      toggleRadio,
+      playTrack,
+      toggle,
+      next,
+      prev,
+      seekTo,
+      setVolume,
+      cycleRepeat,
+      toggleShuffle,
+      enqueue,
+      dismissTrack,
+      lyrics,
+      lyricsLoading,
     }),
     [
-      view, query, search, results, searching,
-      queue, queueIndex, current, isPlaying, isLoading, simulated,
-      progress, duration, volume, repeat, shuffle, radio, radioLoading, toggleRadio,
-      playTrack, toggle, next, prev, seekTo, setVolume, cycleRepeat, toggleShuffle, enqueue,
-      lyricsOpen, aiOpen, lyrics, lyricsLoading, status,
+      mode,
+      setMode,
+      immersive,
+      setImmersive,
+      navigateBack,
+      query,
+      search,
+      clearSearch,
+      results,
+      searching,
+      queue,
+      queueIndex,
+      current,
+      isPlaying,
+      isLoading,
+      progress,
+      duration,
+      volume,
+      repeat,
+      shuffle,
+      radio,
+      radioLoading,
+      toggleRadio,
+      playTrack,
+      toggle,
+      next,
+      prev,
+      seekTo,
+      setVolume,
+      cycleRepeat,
+      toggleShuffle,
+      enqueue,
+      dismissTrack,
+      lyrics,
+      lyricsLoading,
     ]
   );
 

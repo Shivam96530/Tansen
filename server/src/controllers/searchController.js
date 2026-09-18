@@ -121,10 +121,10 @@ export async function searchSongs(req, res) {
     30
   );
 
-  if (!rawQuery || rawQuery.length < 2) {
+  if (!rawQuery || rawQuery.length < 2 || rawQuery.length > 200) {
     return res.status(400).json({
-      error: "Missing or too short query param ?q=",
-      code: "QUERY_TOO_SHORT",
+      error: "Query must be between 2 and 200 characters",
+      code: "INVALID_QUERY_LENGTH",
     });
   }
 
@@ -188,8 +188,9 @@ export async function searchSongs(req, res) {
 
 export async function getAudioStream(req, res) {
   const videoId = String(req.params.videoId ?? "").trim();
-  if (!videoId) {
-    return res.status(400).json({ error: "Missing videoId parameter" });
+  const YT_ID_REGEX = /^[a-zA-Z0-9_-]{8,15}$/;
+  if (!videoId || !YT_ID_REGEX.test(videoId)) {
+    return res.status(400).json({ error: "Invalid videoId parameter", code: "INVALID_VIDEO_ID" });
   }
 
   try {

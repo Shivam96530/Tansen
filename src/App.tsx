@@ -1,70 +1,135 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { Home, Search, Sparkles } from "lucide-react";
+import { ChevronUp, Loader2, Pause, Play, SkipForward, X } from "lucide-react";
 import { PlayerProvider, usePlayer } from "./context/PlayerContext";
-import Sidebar from "./components/Sidebar";
-import TopBar from "./components/TopBar";
-import HomeView from "./components/HomeView";
-import SearchView from "./components/SearchView";
-import PlayerBar from "./components/PlayerBar";
-import LyricsPanel from "./components/LyricsPanel";
-import AIAssistant from "./components/AIAssistant";
-import { cn } from "./utils/cn";
+import ModeLanding from "./components/ModeLanding";
+import SearchWorkspace from "./components/SearchWorkspace";
+import StudioWorkspace from "./components/StudioWorkspace";
+import ImmersivePlayer from "./components/ImmersivePlayer";
+import Artwork from "./components/Artwork";
 
-function MobileNav() {
-  const { view, setView, search, aiOpen, setAiOpen } = usePlayer();
-  const items = [
-    { key: "home" as const, icon: Home, label: "Home", action: () => { setView("home"); search(""); } },
-    { key: "search" as const, icon: Search, label: "Search", action: () => setView("search") },
-    { key: "ai" as const, icon: Sparkles, label: "Mood", action: () => setAiOpen(!aiOpen) },
-  ];
+function MiniPill() {
+  const { current, isPlaying, isLoading, toggle, next, setImmersive, immersive, progress, duration, dismissTrack } = usePlayer();
+
+  if (!current || immersive) return null;
+
+  const pct = duration > 0 ? (progress / duration) * 100 : 0;
+
   return (
-    <div className="flex border-b border-seam bg-ink/80 lg:hidden">
-      {items.map((it) => {
-        const active = it.key === "ai" ? aiOpen : view === it.key;
-        return (
+    <motion.div
+      initial={{ y: 80, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      exit={{ y: 80, opacity: 0 }}
+      transition={{ type: "spring", stiffness: 300, damping: 28 }}
+      className="fixed bottom-5 inset-x-0 z-50 mx-auto w-[calc(100%-2rem)] max-w-md"
+    >
+      <div
+        onClick={() => setImmersive(true)}
+        className="group relative flex cursor-pointer items-center justify-between overflow-hidden rounded-2xl border border-seam/80 bg-ink/90 p-2 pl-2.5 shadow-2xl backdrop-blur-xl transition-all duration-200 hover:border-brass/40"
+      >
+        {/* hairline progress along top edge */}
+        <div className="absolute top-0 inset-x-0 h-0.5 bg-seam">
+          <div className="h-full bg-brass" style={{ width: `${pct}%` }} />
+        </div>
+
+        <div className="flex min-w-0 items-center gap-3">
+          <Artwork track={current} size={42} className="rounded-xl shadow-md" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-semibold text-paper group-hover:text-brass transition-colors">
+              {current.title}
+            </p>
+            <p className="truncate text-[11px] text-mist">{current.artist}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 pl-2" onClick={(e) => e.stopPropagation()}>
           <button
-            key={it.key}
-            onClick={it.action}
-            className={cn(
-              "flex flex-1 items-center justify-center gap-2 py-2.5 text-xs transition-colors",
-              active ? "text-brass" : "text-mist"
-            )}
+            onClick={toggle}
+            className="grid h-9 w-9 place-items-center rounded-xl bg-brass text-ink transition-transform hover:scale-105 active:scale-95"
+            title={isPlaying ? "Pause" : "Play"}
           >
-            <it.icon size={14} />
-            {it.label}
+            {isLoading ? (
+              <Loader2 size={15} className="animate-spin" />
+            ) : isPlaying ? (
+              <Pause size={15} className="fill-current" />
+            ) : (
+              <Play size={15} className="ml-0.5 fill-current" />
+            )}
           </button>
-        );
-      })}
-    </div>
+          <button
+            onClick={next}
+            className="grid h-9 w-9 place-items-center rounded-xl text-mist transition-colors hover:bg-coal hover:text-paper"
+            title="Next song"
+          >
+            <SkipForward size={16} />
+          </button>
+          <button
+            onClick={() => setImmersive(true)}
+            className="grid h-9 w-9 place-items-center rounded-xl text-mist transition-colors hover:bg-coal hover:text-paper"
+            title="Expand player"
+          >
+            <ChevronUp size={16} />
+          </button>
+          <button
+            onClick={dismissTrack}
+            className="grid h-9 w-9 place-items-center rounded-xl text-mist transition-colors hover:bg-coal hover:text-rose-400"
+            title="Close player"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 
 function Shell() {
-  const { view } = usePlayer();
+  const { mode } = usePlayer();
+
   return (
-    <div className="grain flex h-full overflow-hidden">
-      <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar />
-        <MobileNav />
-        <main className="touch-scroll relative flex-1 overflow-y-auto pb-[calc(var(--player-h)+56px)]">
-          <AnimatePresence mode="wait">
+    <div className="grain relative flex h-full flex-col overflow-hidden bg-ink text-paper">
+      <main className="touch-scroll relative flex-1 overflow-y-auto pb-24">
+        <AnimatePresence mode="wait">
+          {mode === "search" ? (
             <motion.div
-              key={view}
-              initial={{ opacity: 0, y: 14 }}
+              key="search"
+              initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
-              className="py-4 lg:py-6"
+              exit={{ opacity: 0, y: -12 }}
+              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
             >
-              {view === "home" ? <HomeView /> : <SearchView />}
+              <SearchWorkspace />
             </motion.div>
-          </AnimatePresence>
-        </main>
-      </div>
-      <PlayerBar />
-      <LyricsPanel />
-      <AIAssistant />
+          ) : mode === "studio" ? (
+            <motion.div
+              key="studio"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <StudioWorkspace />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="landing"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <ModeLanding />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
+
+      {/* MiniPill continuity player bar */}
+      <MiniPill />
+
+      {/* Full-screen synced-lyrics bloom player */}
+      <AnimatePresence>
+        <ImmersivePlayer />
+      </AnimatePresence>
     </div>
   );
 }

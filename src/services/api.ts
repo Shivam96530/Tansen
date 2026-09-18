@@ -1,16 +1,13 @@
-import { DEMO_TRACKS, DEMO_LYRICS } from "../data/demo";
 import { dedupeTracks, songKey } from "../lib/dedupe";
-import type { LyricsResult, ServiceStatus, Track } from "../types";
+import type { LyricsResult, Track } from "../types";
 
 /* ------------------------------------------------------------------
- * Service endpoints — identical wiring to the original architecture:
- *   Express API      → http://localhost:5001  (search, lyrics)
- *   Flask microservice → http://localhost:5002 (yt-dlp audio URLs)
- * Both fall back gracefully to a local demo catalogue when offline.
+ * Service endpoints:
+ *   Express API (canonical bridge) → /api/search, /api/lyrics, /api/get-audio-url
+ * In production, requests use same-origin relative paths (/api/...).
  * ------------------------------------------------------------------ */
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:5001" : "");
-// In production, never call localhost:5002 — Express proxies stream requests via STREAM_BASE_URL env var.
 const STREAM_BASE = import.meta.env.VITE_STREAM_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:5002" : "");
 
 const timeout = (ms: number) => {
@@ -21,19 +18,17 @@ const timeout = (ms: number) => {
 
 /* ---------------- health ---------------- */
 
-export async function checkHealth(): Promise<ServiceStatus> {
-  const ping = async (url: string): Promise<"online" | "offline"> => {
+export async function checkHealth(): Promise<{ api: boolean; stream: boolean }> {
+  const ping = async (url: string): Promise<boolean> => {
     try {
       const t = timeout(2500);
       const res = await fetch(url, { signal: t.signal });
       t.done();
-      return res.ok ? "online" : "offline";
+      return res.ok;
     } catch {
-      return "offline";
+      return false;
     }
   };
-  // Proxy the stream health check through Express (/api/stream-health)
-  // so the browser never tries to contact localhost:5002 on deployed sites.
   const [api, stream] = await Promise.all([
     ping(`${API_BASE}/health`),
     ping(`${API_BASE}/api/stream-health`),
@@ -69,7 +64,7 @@ function normalise(raw: any): Track | null {
   };
 }
 
-export async function searchTracks(query: string, limit = 12, allowDemoFallback = false): Promise<Track[]> {
+export async function searchTracks(query: string, limit = 12): Promise<Track[]> {
   const q = query.trim();
   if (!q) return [];
 
@@ -88,28 +83,21 @@ export async function searchTracks(query: string, limit = 12, allowDemoFallback 
     /* fall through */
   }
 
-  // 2 · Direct to Flask microservice
-  try {
-    const t = timeout(12000);
-    const res = await fetch(`${STREAM_BASE}/search?q=${encodeURIComponent(q)}&limit=${limit}`, { signal: t.signal });
-    t.done();
-    if (res.ok) {
-      const data = await res.json();
-      const list = (data.results ?? data).map(normalise).filter(Boolean) as Track[];
-      const filtered = dedupeTracks(list.filter(isSingleTrack));
-      if (filtered.length) return filtered;
+  // 2 · Direct to Flask microservice (dev fallback only)
+  if (STREAM_BASE) {
+    try {
+      const t = timeout(12000);
+      const res = await fetch(`${STREAM_BASE}/search?q=${encodeURIComponent(q)}&limit=${limit}`, { signal: t.signal });
+      t.done();
+      if (res.ok) {
+        const data = await res.json();
+        const list = (data.results ?? data).map(normalise).filter(Boolean) as Track[];
+        const filtered = dedupeTracks(list.filter(isSingleTrack));
+        if (filtered.length) return filtered;
+      }
+    } catch {
+      /* fall through */
     }
-  } catch {
-    /* fall through */
-  }
-
-  // 3 · Demo catalogue (only if explicitly allowed, e.g. for offline demo testing)
-  if (allowDemoFallback) {
-    const needle = q.toLowerCase();
-    const matches = DEMO_TRACKS.filter(
-      (t) => t.title.toLowerCase().includes(needle) || t.artist.toLowerCase().includes(needle)
-    );
-    return matches.length ? matches : DEMO_TRACKS.slice(0, 6);
   }
 
   return [];
@@ -122,35 +110,44 @@ export async function searchTracks(query: string, limit = 12, allowDemoFallback 
 export async function getRelatedTracks(
   seed: Track,
   heard: Set<string>,
-  count = 4
+  count = 4,
+  contextQuery = ""
 ): Promise<Track[]> {
-  // Clean channel names or video labels from seed info
+  // Strip record label channels so they don't pollute similarity queries
+  const LABEL_RE = /\b(t-?series|sony\s*music|zee\s*music|saregama|tips\s*official|vevo|yrf|warner\s*music|universal\s*music|speed\s*records)\b/i;
+  let artist = (seed.artist || seed.channel || "")
+    .replace(/\s*-\s*topic\s*$/i, "")
+    .replace(/\s*vevo\b/i, "")
+    .trim();
+  if (LABEL_RE.test(artist)) artist = "";
+
   const cleanTitle = seed.title
     .replace(/\([^)]*\)|\[[^\]]*\]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const cleanArtist = seed.artist
-    .replace(/ - Topic|VEVO|Official|Records|Channel/gi, "")
-    .trim();
 
+  const intent = contextQuery.trim();
   const queries = [
-    `${cleanTitle} single song`,
-    `${cleanArtist || seed.artist} hit song`,
-    `songs like ${cleanTitle}`,
-  ];
+    intent && intent,
+    artist && `${artist} popular songs`,
+    artist && `${artist} hits song`,
+    cleanTitle && `songs like ${cleanTitle}`,
+    intent && `${intent} mix songs`,
+    cleanTitle && `${cleanTitle} type songs`,
+  ].filter(Boolean) as string[];
 
   const picked: Track[] = [];
   const seenKeys = new Set<string>([songKey(seed)]);
+  heard.forEach((k) => seenKeys.add(k));
 
   for (const q of queries) {
     if (picked.length >= count) break;
     try {
-      const results = await searchTracks(q, 8);
-      for (const t of results) {
-        if (!isSingleTrack(t)) continue;
-        const k = songKey(t);
-        if (!seenKeys.has(k) && !heard.has(k)) {
-          seenKeys.add(k);
+      const found = await searchTracks(q, 6);
+      for (const t of found) {
+        const key = songKey(t);
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
           picked.push(t);
           if (picked.length >= count) break;
         }
@@ -160,19 +157,15 @@ export async function getRelatedTracks(
     }
   }
 
-  // Shuffle so radio doesn't always start with the same song
   return picked.sort(() => Math.random() - 0.5);
 }
 
 /* ---------------- audio stream ----------------
- * Flask → /get-audio-url/<video_id>  (yt-dlp extracts the direct
+ * Flask → /get-audio-url/<video_id> (yt-dlp extracts the direct
  * .m4a stream URL — nothing is downloaded server-side). */
 
 export async function getAudioUrl(videoId: string): Promise<string | null> {
-  if (videoId.startsWith("demo-")) return null; // simulated playback
-
   // 1 · Express API proxy (/api/get-audio-url/:id) — works on deployed site
-  //     because Express knows the real Python engine URL from STREAM_BASE_URL env var.
   try {
     const t = timeout(20000);
     const res = await fetch(`${API_BASE}/api/get-audio-url/${encodeURIComponent(videoId)}`, {
@@ -188,8 +181,8 @@ export async function getAudioUrl(videoId: string): Promise<string | null> {
     /* fall through */
   }
 
-  // 2 · Direct Flask stream engine (local dev only when VITE_STREAM_BASE_URL is set)
-  if (STREAM_BASE && STREAM_BASE !== "") {
+  // 2 · Direct Flask stream engine (local dev fallback only)
+  if (STREAM_BASE) {
     try {
       const t = timeout(20000);
       const res = await fetch(`${STREAM_BASE}/get-audio-url/${encodeURIComponent(videoId)}`, {
@@ -209,13 +202,9 @@ export async function getAudioUrl(videoId: string): Promise<string | null> {
 }
 
 /* ---------------- lyrics ----------------
- * Express → /api/lyrics?q=  (genius.com search + cheerio scrape of
- * [data-lyrics-container="true"]). */
+ * Express → /api/lyrics?q= (LRCLIB exact + Genius + cheerio scrape). */
 
 export async function getLyrics(track: Track): Promise<LyricsResult> {
-  if (track.source === "demo") {
-    return { lyrics: DEMO_LYRICS[track.id] ?? DEMO_LYRICS.default, title: track.title, artist: track.artist };
-  }
   try {
     const t = timeout(12000);
     const queryParams = new URLSearchParams({
@@ -228,7 +217,16 @@ export async function getLyrics(track: Track): Promise<LyricsResult> {
     t.done();
     if (res.ok) {
       const data = await res.json();
-      if (data.lyrics) return { lyrics: data.lyrics, title: data.title || track.title, artist: data.artist || track.artist };
+      if (data.lyrics) {
+        return {
+          lyrics: data.lyrics,
+          syncedLyrics: data.syncedLyrics ?? null,
+          title: data.title || track.title,
+          artist: data.artist || track.artist,
+          source: data.source,
+          confidence: data.confidence,
+        };
+      }
     }
   } catch {
     /* fall through */
