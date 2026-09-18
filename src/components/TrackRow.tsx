@@ -27,7 +27,7 @@ export default function TrackRow({
       transition={{ delay: Math.min(index * 0.045, 0.4), duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
       onDoubleClick={() => playTrack(track, context)}
       className={cn(
-        "group grid grid-cols-[28px_48px_1fr_auto] items-center gap-4 rounded-xl px-3 py-2.5 transition-colors sm:grid-cols-[32px_48px_1.6fr_1fr_auto_auto]",
+        "group grid grid-cols-[28px_48px_1fr_auto] items-center gap-3 rounded-xl px-2.5 py-2.5 transition-colors sm:grid-cols-[32px_48px_1.6fr_1fr_auto_auto] sm:gap-4 sm:px-3",
         active ? "bg-seam/70" : "hover:bg-coal"
       )}
     >
@@ -68,11 +68,11 @@ export default function TrackRow({
       {/* artist */}
       <p className="hidden truncate text-[13px] text-mist sm:block">{track.artist}</p>
 
-      {/* actions */}
-      <div className="hidden items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 sm:flex">
+      {/* actions — always visible on touch, hover-reveal on desktop */}
+      <div className="flex items-center gap-0.5 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100">
         <button
           onClick={() => enqueue(track)}
-          className="grid h-8 w-8 place-items-center rounded-full text-mist transition-colors hover:bg-seam hover:text-paper"
+          className="grid h-9 w-9 place-items-center rounded-full text-mist transition-colors hover:bg-seam hover:text-paper sm:h-8 sm:w-8"
           title="Add to queue"
         >
           <Plus size={15} />
@@ -82,15 +82,15 @@ export default function TrackRow({
             if (!active) playTrack(track, context);
             setLyricsOpen(true);
           }}
-          className="grid h-8 w-8 place-items-center rounded-full text-mist transition-colors hover:bg-seam hover:text-paper"
+          className="grid h-9 w-9 place-items-center rounded-full text-mist transition-colors hover:bg-seam hover:text-paper sm:h-8 sm:w-8"
           title="Play with lyrics"
         >
           <MicVocal size={15} />
         </button>
       </div>
 
-      {/* duration */}
-      <span className="text-right font-mono text-xs text-mist/80">
+      {/* duration (hidden on mobile, where actions take the column) */}
+      <span className="hidden text-right font-mono text-xs text-mist/80 sm:inline">
         {fmtTime(track.duration)}
       </span>
     </motion.div>

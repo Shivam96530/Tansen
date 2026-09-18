@@ -12,12 +12,12 @@ export default function LyricsPanel() {
       initial={false}
       animate={{ x: lyricsOpen ? 0 : "110%", opacity: lyricsOpen ? 1 : 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 34 }}
-      className={`fixed right-0 top-0 z-40 flex w-full max-w-[440px] flex-col border-l border-seam bg-coal/95 backdrop-blur-xl ${current ? "bottom-[92px]" : "bottom-0"}`}
+      className={`fixed right-0 top-0 z-40 flex w-full max-w-[440px] flex-col border-l border-seam bg-coal/95 backdrop-blur-xl ${current ? "bottom-[var(--player-h)]" : "bottom-0"}`}
       style={{ pointerEvents: lyricsOpen ? "auto" : "none" }}
       aria-hidden={!lyricsOpen}
     >
       {/* header */}
-      <div className="flex items-center justify-between border-b border-seam px-6 py-4">
+      <div className="flex items-center justify-between border-b border-seam px-6 pb-4 pt-[calc(16px+env(safe-area-inset-top,0px))] lg:py-4">
         <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.24em] text-mist">
           <ScanText size={13} className="text-brass" />
           Lyrics

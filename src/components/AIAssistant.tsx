@@ -79,12 +79,12 @@ export default function AIAssistant() {
       initial={false}
       animate={{ x: aiOpen ? 0 : "110%", opacity: aiOpen ? 1 : 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 34 }}
-      className={`fixed right-0 top-0 z-[45] flex w-full max-w-[440px] flex-col border-l border-seam bg-coal/95 backdrop-blur-xl ${current ? "bottom-[92px]" : "bottom-0"}`}
+      className={`fixed right-0 top-0 z-[45] flex w-full max-w-[440px] flex-col border-l border-seam bg-coal/95 backdrop-blur-xl ${current ? "bottom-[var(--player-h)]" : "bottom-0"}`}
       style={{ pointerEvents: aiOpen ? "auto" : "none" }}
       aria-hidden={!aiOpen}
     >
       {/* header */}
-      <div className="flex items-center justify-between border-b border-seam px-6 py-4">
+      <div className="flex items-center justify-between border-b border-seam px-6 pb-4 pt-[calc(16px+env(safe-area-inset-top,0px))] lg:py-4">
         <div className="flex items-center gap-2.5">
           <div className="grid h-8 w-8 place-items-center rounded-lg bg-iris/15 text-iris">
             <Sparkles size={15} />
@@ -92,7 +92,7 @@ export default function AIAssistant() {
           <div>
             <p className="text-sm font-medium">Mood Studio</p>
             <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-mist">
-              roberta-go-emotions · live single tracks
+              hf chat · server-side
             </p>
           </div>
         </div>

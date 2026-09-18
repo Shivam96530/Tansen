@@ -29,7 +29,7 @@ export default function PlayerBar() {
           animate={{ y: 0 }}
           exit={{ y: 110 }}
           transition={{ type: "spring", stiffness: 260, damping: 30 }}
-          className="fixed inset-x-0 bottom-0 z-50 border-t border-seam bg-ink/85 backdrop-blur-2xl"
+          className="fixed inset-x-0 bottom-0 z-50 border-t border-seam bg-ink/85 backdrop-blur-2xl pb-[env(safe-area-inset-bottom,0px)]"
         >
           {/* hairline progress (mirrors seek) */}
           <div className="absolute -top-px left-0 h-px w-full bg-seam">
@@ -40,68 +40,173 @@ export default function PlayerBar() {
             />
           </div>
 
-          <div className="mx-auto grid h-[92px] max-w-[1600px] grid-cols-[1fr_auto] items-center gap-3 px-3 sm:px-5 lg:grid-cols-[1fr_1.4fr_1fr]">
-            {/* left: track meta */}
-            <div className="flex min-w-0 items-center gap-3">
-              <Artwork track={current} size={54} spinning={isPlaying} />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-paper">{current.title}</p>
-                <p className="truncate text-xs text-mist">{current.artist}</p>
-                <p
-                  className={cn(
-                    "mt-0.5 hidden font-mono text-[9px] uppercase tracking-[0.2em] sm:block",
-                    radioLoading ? "text-sage" : "text-mist/60"
-                  )}
-                >
-                  {radioLoading
-                    ? "radio · finding next song…"
-                    : simulated
-                      ? "demo · simulated"
-                      : "live stream · m4a"}
-                </p>
+          <div className="mx-auto flex max-w-[1600px] flex-col px-3 sm:px-5" style={{ height: "calc(var(--player-h) - env(safe-area-inset-bottom, 0px))" }}>
+            <div className="grid flex-1 grid-cols-[1fr_auto] items-center gap-3 lg:grid-cols-[1fr_1.4fr_1fr]">
+              {/* left: track meta */}
+              <div className="flex min-w-0 items-center gap-3">
+                <Artwork track={current} size={54} spinning={isPlaying} />
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-paper">{current.title}</p>
+                  <p className="truncate text-xs text-mist">{current.artist}</p>
+                  <p
+                    className={cn(
+                      "mt-0.5 hidden font-mono text-[9px] uppercase tracking-[0.2em] sm:block",
+                      radioLoading ? "text-sage" : "text-mist/60"
+                    )}
+                  >
+                    {radioLoading
+                      ? "radio · finding next song…"
+                      : simulated
+                        ? "demo · simulated"
+                        : "live stream · m4a"}
+                  </p>
+                </div>
+                <Equalizer playing={isPlaying} className="ml-1 hidden h-4 sm:flex" />
               </div>
-              <Equalizer playing={isPlaying} className="ml-1 hidden h-4 sm:flex" />
-            </div>
 
-            {/* center: transport + seek */}
-            <div className="hidden flex-col items-center gap-1.5 lg:flex">
-              <div className="flex items-center gap-5">
-                <button
-                  onClick={toggleShuffle}
-                  className={cn("transition-colors", shuffle ? "text-brass" : "text-mist hover:text-paper")}
-                  title="Shuffle"
-                >
-                  <Shuffle size={15} />
-                </button>
-                <button onClick={prev} className="text-mist transition-colors hover:text-paper" title="Previous">
-                  <SkipBack size={18} className="fill-current" />
-                </button>
+              {/* center: transport + seek */}
+              <div className="hidden flex-col items-center gap-1.5 lg:flex">
+                <div className="flex items-center gap-5">
+                  <button
+                    onClick={toggleShuffle}
+                    className={cn("transition-colors", shuffle ? "text-brass" : "text-mist hover:text-paper")}
+                    title="Shuffle"
+                  >
+                    <Shuffle size={15} />
+                  </button>
+                  <button onClick={prev} className="text-mist transition-colors hover:text-paper" title="Previous">
+                    <SkipBack size={18} className="fill-current" />
+                  </button>
+                  <button
+                    onClick={toggle}
+                    className="grid h-10 w-10 place-items-center rounded-full bg-brass text-ink shadow-[0_0_24px_rgba(240,168,50,0.35)] transition-transform hover:scale-105 active:scale-95"
+                    title={isPlaying ? "Pause" : "Play"}
+                  >
+                    {isLoading ? (
+                      <Loader2 size={17} className="animate-spin" />
+                    ) : isPlaying ? (
+                      <Pause size={17} className="fill-current" />
+                    ) : (
+                      <Play size={17} className="ml-0.5 fill-current" />
+                    )}
+                  </button>
+                  <button onClick={next} className="text-mist transition-colors hover:text-paper" title="Next">
+                    <SkipForward size={18} className="fill-current" />
+                  </button>
+                  <button
+                    onClick={cycleRepeat}
+                    className={cn("relative transition-colors", repeat !== "off" ? "text-brass" : "text-mist hover:text-paper")}
+                    title={`Repeat: ${repeat}`}
+                  >
+                    {repeat === "one" ? <Repeat1 size={15} /> : <Repeat size={15} />}
+                  </button>
+                </div>
+                <div className="fader-wrap flex w-full max-w-md items-center gap-3">
+                  <span className="w-9 text-right font-mono text-[10px] text-mist">{fmtTime(progress)}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={0.1}
+                    value={pct}
+                    onChange={(e) => seek(Number(e.target.value))}
+                    className="fader flex-1"
+                    style={{ ["--fill" as any]: `${pct}%` }}
+                    aria-label="Seek"
+                  />
+                  <span className="w-9 font-mono text-[10px] text-mist">{fmtTime(duration)}</span>
+                </div>
+              </div>
+
+              {/* mobile transport */}
+              <div className="flex items-center justify-end gap-2 lg:hidden">
                 <button
                   onClick={toggle}
-                  className="grid h-10 w-10 place-items-center rounded-full bg-brass text-ink shadow-[0_0_24px_rgba(240,168,50,0.35)] transition-transform hover:scale-105 active:scale-95"
-                  title={isPlaying ? "Pause" : "Play"}
+                  className="grid h-10 w-10 place-items-center rounded-full bg-brass text-ink"
                 >
-                  {isLoading ? (
-                    <Loader2 size={17} className="animate-spin" />
-                  ) : isPlaying ? (
-                    <Pause size={17} className="fill-current" />
-                  ) : (
-                    <Play size={17} className="ml-0.5 fill-current" />
-                  )}
+                  {isLoading ? <Loader2 size={17} className="animate-spin" /> : isPlaying ? <Pause size={17} className="fill-current" /> : <Play size={17} className="ml-0.5 fill-current" />}
                 </button>
-                <button onClick={next} className="text-mist transition-colors hover:text-paper" title="Next">
+                <button onClick={next} className="grid h-9 w-9 place-items-center text-mist">
                   <SkipForward size={18} className="fill-current" />
                 </button>
-                <button
-                  onClick={cycleRepeat}
-                  className={cn("relative transition-colors", repeat !== "off" ? "text-brass" : "text-mist hover:text-paper")}
-                  title={`Repeat: ${repeat}`}
-                >
-                  {repeat === "one" ? <Repeat1 size={15} /> : <Repeat size={15} />}
-                </button>
               </div>
-              <div className="fader-wrap flex w-full max-w-md items-center gap-3">
-                <span className="w-9 text-right font-mono text-[10px] text-mist">{fmtTime(progress)}</span>
+
+              {/* right: panels + volume */}
+              <div className="hidden items-center justify-end gap-1.5 lg:flex">
+                <button
+                  onClick={toggleRadio}
+                  className={cn(
+                    "grid h-9 w-9 place-items-center rounded-full transition-colors",
+                    radio ? "bg-sage/15 text-sage" : "text-mist hover:text-paper"
+                  )}
+                  title={
+                    radio
+                      ? "Autoplay is ON — keeps playing related songs when the queue ends"
+                      : "Autoplay is OFF — playback stops at the end of the queue"
+                  }
+                >
+                  {radioLoading ? <Loader2 size={16} className="animate-spin" /> : <Radio size={16} />}
+                </button>
+                <button
+                  onClick={() => setLyricsOpen(!lyricsOpen)}
+                  className={cn(
+                    "grid h-9 w-9 place-items-center rounded-full transition-colors",
+                    lyricsOpen ? "bg-brass/15 text-brass" : "text-mist hover:text-paper"
+                  )}
+                  title="Lyrics"
+                >
+                  <MicVocal size={16} />
+                </button>
+                <button
+                  onClick={() => setAiOpen(!aiOpen)}
+                  className={cn(
+                    "grid h-9 w-9 place-items-center rounded-full transition-colors",
+                    aiOpen ? "bg-iris/15 text-iris" : "text-mist hover:text-paper"
+                  )}
+                  title="Mood Studio"
+                >
+                  <Sparkles size={16} />
+                </button>
+                <div className="fader-wrap ml-2 flex items-center gap-2">
+                  <button
+                    onClick={() => setVolume(volume === 0 ? 0.85 : 0)}
+                    className="text-mist transition-colors hover:text-paper"
+                    title="Mute"
+                  >
+                    {volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={volume * 100}
+                    onChange={(e) => setVolume(Number(e.target.value) / 100)}
+                    className="fader w-24"
+                    style={{ ["--fill" as any]: `${volume * 100}%` }}
+                    aria-label="Volume"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* mobile row: full transport controls + seek, visible below lg */}
+            <div className="flex h-11 items-center gap-2 pb-1.5 lg:hidden">
+              <button
+                onClick={toggleShuffle}
+                className={cn("grid h-8 w-8 shrink-0 place-items-center", shuffle ? "text-brass" : "text-mist")}
+                title="Shuffle"
+              >
+                <Shuffle size={14} />
+              </button>
+              <button
+                onClick={cycleRepeat}
+                className={cn("grid h-8 w-8 shrink-0 place-items-center", repeat !== "off" ? "text-brass" : "text-mist")}
+                title={`Repeat: ${repeat}`}
+              >
+                {repeat === "one" ? <Repeat1 size={14} /> : <Repeat size={14} />}
+              </button>
+              <div className="fader-wrap flex min-w-0 flex-1 items-center gap-1.5">
+                <span className="w-7 shrink-0 text-right font-mono text-[9px] text-mist">{fmtTime(progress)}</span>
                 <input
                   type="range"
                   min={0}
@@ -109,82 +214,33 @@ export default function PlayerBar() {
                   step={0.1}
                   value={pct}
                   onChange={(e) => seek(Number(e.target.value))}
-                  className="fader flex-1"
+                  className="fader min-w-0 flex-1"
                   style={{ ["--fill" as any]: `${pct}%` }}
                   aria-label="Seek"
                 />
-                <span className="w-9 font-mono text-[10px] text-mist">{fmtTime(duration)}</span>
+                <span className="w-7 shrink-0 font-mono text-[9px] text-mist">{fmtTime(duration)}</span>
               </div>
-            </div>
-
-            {/* mobile transport */}
-            <div className="flex items-center justify-end gap-2 lg:hidden">
-              <button
-                onClick={toggle}
-                className="grid h-10 w-10 place-items-center rounded-full bg-brass text-ink"
-              >
-                {isLoading ? <Loader2 size={17} className="animate-spin" /> : isPlaying ? <Pause size={17} className="fill-current" /> : <Play size={17} className="ml-0.5 fill-current" />}
-              </button>
-              <button onClick={next} className="grid h-9 w-9 place-items-center text-mist">
-                <SkipForward size={18} className="fill-current" />
-              </button>
-            </div>
-
-            {/* right: panels + volume */}
-            <div className="hidden items-center justify-end gap-1.5 lg:flex">
               <button
                 onClick={toggleRadio}
-                className={cn(
-                  "grid h-9 w-9 place-items-center rounded-full transition-colors",
-                  radio ? "bg-sage/15 text-sage" : "text-mist hover:text-paper"
-                )}
-                title={
-                  radio
-                    ? "Autoplay is ON — keeps playing related songs when the queue ends"
-                    : "Autoplay is OFF — playback stops at the end of the queue"
-                }
+                className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full", radio ? "text-sage" : "text-mist")}
+                title={radio ? "Autoplay on" : "Autoplay off"}
               >
-                {radioLoading ? <Loader2 size={16} className="animate-spin" /> : <Radio size={16} />}
+                {radioLoading ? <Loader2 size={14} className="animate-spin" /> : <Radio size={14} />}
               </button>
               <button
                 onClick={() => setLyricsOpen(!lyricsOpen)}
-                className={cn(
-                  "grid h-9 w-9 place-items-center rounded-full transition-colors",
-                  lyricsOpen ? "bg-brass/15 text-brass" : "text-mist hover:text-paper"
-                )}
+                className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full", lyricsOpen ? "text-brass" : "text-mist")}
                 title="Lyrics"
               >
-                <MicVocal size={16} />
+                <MicVocal size={14} />
               </button>
               <button
                 onClick={() => setAiOpen(!aiOpen)}
-                className={cn(
-                  "grid h-9 w-9 place-items-center rounded-full transition-colors",
-                  aiOpen ? "bg-iris/15 text-iris" : "text-mist hover:text-paper"
-                )}
+                className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full", aiOpen ? "text-iris" : "text-mist")}
                 title="Mood Studio"
               >
-                <Sparkles size={16} />
+                <Sparkles size={14} />
               </button>
-              <div className="fader-wrap ml-2 flex items-center gap-2">
-                <button
-                  onClick={() => setVolume(volume === 0 ? 0.85 : 0)}
-                  className="text-mist transition-colors hover:text-paper"
-                  title="Mute"
-                >
-                  {volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                </button>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={volume * 100}
-                  onChange={(e) => setVolume(Number(e.target.value) / 100)}
-                  className="fader w-24"
-                  style={{ ["--fill" as any]: `${volume * 100}%` }}
-                  aria-label="Volume"
-                />
-              </div>
             </div>
           </div>
         </motion.footer>

@@ -254,6 +254,7 @@ def search():
                     "id": entry["id"],
                     "title": title,
                     "artist": entry.get("channel") or entry.get("uploader") or "Unknown artist",
+                    "channel": entry.get("channel") or entry.get("uploader") or "",
                     "thumbnail": f"https://i.ytimg.com/vi/{entry['id']}/hqdefault.jpg",
                     "duration": dur,
                 }

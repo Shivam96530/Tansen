@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
@@ -11,16 +12,84 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT || 5001);
-const STREAM_BASE = process.env.STREAM_BASE_URL || "http://localhost:5002";
+const STREAM_BASE = (process.env.STREAM_BASE_URL || "http://localhost:5002").replace(/\/+$/, "");
+const APP_ORIGIN = (process.env.APP_ORIGIN || "").trim();
 
-app.use(cors());
+app.set("trust proxy", 1);
+
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          "https://www.youtube.com",
+          "https://www.youtube-nocookie.com",
+          "https://s.ytimg.com",
+        ],
+        frameSrc: [
+          "'self'",
+          "https://www.youtube.com",
+          "https://www.youtube-nocookie.com",
+        ],
+        imgSrc: [
+          "'self'",
+          "data:",
+          "blob:",
+          "https://i.ytimg.com",
+          "https://img.youtube.com",
+          "https://images.genius.com",
+          "https://lh3.googleusercontent.com",
+        ],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
+        connectSrc: [
+          "'self'",
+          "https://api-inference.huggingface.co",
+          "https://router.huggingface.co",
+          "https://api.genius.com",
+          "https://lrclib.net",
+          "https://api.lyrics.ovh",
+          "https://www.youtube.com",
+          "https://www.googlevideo.com",
+          "https://i.ytimg.com",
+        ],
+        mediaSrc: ["'self'", "blob:", "https://www.googlevideo.com", "https://www.youtube.com"],
+        workerSrc: ["'self'", "blob:"],
+        objectSrc: ["'none'"],
+        upgradeInsecureRequests: [],
+      },
+    },
+  })
+);
+
+if (APP_ORIGIN) {
+  const allowedOrigins = APP_ORIGIN.split(",").map((s) => s.trim());
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+          return callback(null, true);
+        }
+        return callback(new Error("Not allowed by CORS"));
+      },
+      methods: ["GET", "POST"],
+      credentials: false,
+    })
+  );
+} else {
+  app.use(cors());
+}
+
 app.use(express.json());
 
 app.get("/health", (_req, res) =>
   res.json({ status: "ok", service: "api-bridge", port: PORT })
 );
 
-// Proxy stream engine health check — frontend must never call localhost:5002 directly
 app.get("/api/stream-health", async (_req, res) => {
   try {
     const { data } = await axios.get(`${STREAM_BASE}/health`, { timeout: 4000 });
@@ -32,12 +101,9 @@ app.get("/api/stream-health", async (_req, res) => {
 
 app.use("/api", apiRoutes);
 
-
-// Serve static assets from the React dist directory
 const distPath = path.resolve(__dirname, "../../dist");
 app.use(express.static(distPath));
 
-// Fallback all other routes to index.html for React SPA navigation
 app.get("*", (req, res) => {
   if (req.path.startsWith("/api")) {
     return res.status(404).json({ error: "Not found" });
@@ -51,7 +117,7 @@ app.get("*", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`· API bridge listening on http://localhost:${PORT}`);
-  console.log(`· GET /api/search?q=   → yt-dlp (via stream engine) / Genius metadata`);
-  console.log(`· GET /api/lyrics?q=   → Genius page scrape ([data-lyrics-container])`);
+  console.log(`· GET /api/search?q=       → yt-dlp (via stream engine)`);
+  console.log(`· GET /api/lyrics?q=       → Genius + LRCLIB confidence-matched lyrics`);
+  console.log(`· POST /api/ai/analyse    → server-side Hugging Face emotion + recommendation intelligence`);
 });
-

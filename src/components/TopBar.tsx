@@ -25,10 +25,10 @@ export default function TopBar() {
       <div className="flex items-center gap-3 px-4 py-3.5 lg:px-8">
         {/* mobile brand */}
         <div className="flex items-center gap-2.5 lg:hidden">
-          <div className="grid h-8 w-8 place-items-center rounded-lg bg-brass text-ink">
+          <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brass text-ink">
             <AudioWaveform size={16} strokeWidth={2.4} />
           </div>
-          <span className="font-display text-lg">Tansen</span>
+          <span className="hidden font-display text-lg sm:block">Tansen</span>
         </div>
 
         {/* search */}

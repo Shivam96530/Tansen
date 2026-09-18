@@ -62,6 +62,7 @@ function normalise(raw: any): Track | null {
     id: String(id),
     title: String(title).replace(/\s+/g, " ").trim(),
     artist: raw.artist ?? raw.uploader ?? raw.channel ?? "Unknown artist",
+    channel: raw.channel ?? raw.uploader ?? raw.artist ?? "",
     thumbnail: raw.thumbnail ?? (raw.id || raw.videoId ? `https://i.ytimg.com/vi/${raw.id ?? raw.videoId}/hqdefault.jpg` : null),
     duration,
     source: "youtube",
@@ -220,6 +221,8 @@ export async function getLyrics(track: Track): Promise<LyricsResult> {
     const queryParams = new URLSearchParams({
       q: track.title,
       artist: track.artist || "",
+      channel: track.channel || "",
+      duration: String(track.duration || 0),
     });
     const res = await fetch(`${API_BASE}/api/lyrics?${queryParams.toString()}`, { signal: t.signal });
     t.done();

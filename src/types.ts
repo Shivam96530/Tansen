@@ -2,6 +2,10 @@ export interface Track {
   id: string;
   title: string;
   artist: string;
+  channel?: string;
+  canonicalTitle?: string;
+  canonicalArtist?: string;
+  canonicalDuration?: number;
   thumbnail: string | null;
   duration: number; // seconds
   source: "youtube" | "genius" | "demo";
@@ -11,6 +15,9 @@ export interface LyricsResult {
   lyrics: string;
   title?: string;
   artist?: string;
+  syncedLyrics?: string | null;
+  source?: string;
+  confidence?: number;
 }
 
 export type MoodKey =

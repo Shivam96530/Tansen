@@ -23,8 +23,8 @@ const PIPELINE = [
   {
     icon: BrainCircuit,
     title: "Mood intelligence",
-    body: "Sentiment analysis reads how you feel; a language model composes the recommendation narrative.",
-    meta: "distilbert + gpt2 · hugging face",
+    body: "A server-side language model reads how you feel and composes targeted recommendations — keys never touch the browser.",
+    meta: "chat completions · server-side hugging face",
   },
 ];
 

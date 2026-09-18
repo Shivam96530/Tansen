@@ -1,360 +1,152 @@
 import { MOODS, MOOD_DEMO_MAP, findsDemo, DEMO_TRACKS } from "../data/demo";
-import { searchTracks, isSingleTrack } from "./api";
-import { songKey } from "../lib/dedupe";
+import { searchTracks } from "./api";
 import type { MoodKey, Track } from "../types";
 
-/* ------------------------------------------------------------------
- * Hugging Face Inference API — Trained Semantic Emotion & Mood Engine
- * Models:
- *   - SamLowe/roberta-base-go_emotions: 28 nuanced human emotions
- *   - cardiffnlp/twitter-roberta-base-sentiment-latest: polarity check
- * Offline/local:
- *   - Multi-lingual linguistic parser (English, Hindi, Hinglish, genres, artists)
- * ------------------------------------------------------------------ */
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:5001" : "");
 
-const HF_KEY = (import.meta.env.VITE_HUGGING_FACE_API_KEY ?? "").trim();
-const HF_INFERENCE_BASE = "https://router.huggingface.co/hf-inference/models";
-const EMOTION_MODEL = "SamLowe/roberta-base-go_emotions";
-const SENTIMENT_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest";
+const ALLOWED_MOODS: MoodKey[] = ["happy", "sad", "romantic", "energetic", "calm", "focus"];
 
-/** POST to HF Inference API with automatic retry on cold start */
-async function hfPost(model: string, payload: unknown): Promise<any | null> {
-  if (!HF_KEY || HF_KEY.length < 8) return null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const res = await fetch(`${HF_INFERENCE_BASE}/${model}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${HF_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      if (res.status === 503) {
-        const body = await res.json().catch(() => ({}));
-        const wait = Math.min((body?.estimated_time ?? 5) * 1000, 10000);
-        await new Promise((r) => setTimeout(r, wait));
-        continue;
-      }
-      if (res.ok) {
-        return await res.json();
-      }
-      return null;
-    } catch {
-      return null;
+const LOCAL_MOOD_KEYWORDS: Record<MoodKey, string[]> = {
+  happy: [
+    "happy", "joy", "great", "awesome", "excited", "good", "amazing", "wonderful",
+    "glad", "cheerful", "delighted", "grateful", "sunny", "vibing", "celebrate", "smile", "laugh"
+  ],
+  sad: [
+    "sad", "down", "depressed", "heartbroken", "lonely", "cry", "crying", "upset",
+    "miserable", "grief", "blue", "miss", "hurt", "tired", "empty", "tear", "pain", "dark", "alone", "breakup"
+  ],
+  romantic: [
+    "love", "romantic", "crush", "date", "valentine", "beloved", "heart", "adore",
+    "anniversary", "wedding", "beautiful", "cuddle", "intimate", "soulful"
+  ],
+  energetic: [
+    "energy", "workout", "gym", "party", "dance", "pump", "run", "hype", "power",
+    "adrenaline", "fast", "epic", "extreme", "heavy", "lift", "beast", "rage", "club"
+  ],
+  calm: [
+    "calm", "relax", "peace", "sleep", "chill", "quiet", "meditate", "soft", "gentle",
+    "breathe", "evening", "rain", "slow", "ambient", "serene", "soothing", "unwind"
+  ],
+  focus: [
+    "focus", "study", "work", "concentrate", "code", "coding", "read", "exam",
+    "deep", "productive", "flow", "writing", "deadline", "lofi", "instrumental", "background", "pomodoro"
+  ],
+};
+
+function detectLocalMood(text: string): MoodKey {
+  const lower = text.toLowerCase();
+  const hindiMap: [string[], MoodKey][] = [
+    [["dard", "judai", "rona", "roye", "gham", "udas", "dil toot", "tanha", "bikhra", "dil"], "sad"],
+    [["khush", "khushi", "mast", "masti", "jashn", "nach", "maza", "vibe"], "happy"],
+    [["pyar", "ishq", "mohobbat", "aashiq", "deewana", "sanam", "jaan", "pyaar"], "romantic"],
+    [["sukoon", "shanti", "halka", "thanda", "aaram"], "calm"],
+    [["josh", "dhamaka", "aag", "dum"], "energetic"],
+    [["padhai", "study", "exam", "focus", "paper"], "focus"],
+  ];
+  for (const [words, mood] of hindiMap) {
+    if (words.some((w) => lower.includes(w))) return mood;
+  }
+
+  let best: MoodKey = "calm";
+  let bestScore = 0;
+  (Object.keys(LOCAL_MOOD_KEYWORDS) as MoodKey[]).forEach((mood) => {
+    const score = LOCAL_MOOD_KEYWORDS[mood].reduce((acc, word) => acc + (lower.includes(word) ? 1 : 0), 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = mood;
     }
-  }
-  return null;
+  });
+  return best;
 }
 
-/* ---------------- Emotion Classification ---------------- */
-
-export interface DetectedEmotion {
-  label: string;
-  score: number;
+function normalizeMoodCandidate(value: unknown): MoodKey {
+  const normalized = String(value ?? "").toLowerCase();
+  return ALLOWED_MOODS.includes(normalized as MoodKey) ? (normalized as MoodKey) : "calm";
 }
 
-async function hfDetectEmotions(text: string): Promise<DetectedEmotion[]> {
+async function callServerAnalyse(text: string): Promise<{
+  mood: MoodKey;
+  emotion?: string;
+  reply: string;
+  tracks: Track[];
+  source: string;
+} | null> {
   try {
-    const data = await hfPost(EMOTION_MODEL, { inputs: text });
-    if (!data) return [];
-    const list = Array.isArray(data) ? (Array.isArray(data[0]) ? data[0] : data) : [];
-    return list.map((item: any) => ({
-      label: String(item.label || "").toLowerCase(),
-      score: Number(item.score || 0),
-    }));
-  } catch {
-    return [];
-  }
-}
-
-async function hfSentimentPolarity(text: string): Promise<"POSITIVE" | "NEGATIVE" | null> {
-  try {
-    const data = await hfPost(SENTIMENT_MODEL, { inputs: text });
-    if (!data) return null;
-    const list = Array.isArray(data) ? (Array.isArray(data[0]) ? data[0] : data) : [];
-    const top = list.sort((a: any, b: any) => b.score - a.score)[0];
-    const lbl = (top?.label || "").toLowerCase();
-    if (lbl.includes("pos")) return "POSITIVE";
-    if (lbl.includes("neg")) return "NEGATIVE";
-    return null;
+    const res = await fetch(`${API_BASE}/api/ai/analyse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const mood = normalizeMoodCandidate(data?.mood);
+    const tracks = Array.isArray(data?.tracks) ? data.tracks : [];
+    return {
+      mood,
+      emotion: data?.emotion ? String(data.emotion) : undefined,
+      reply: String(data?.reply ?? ""),
+      tracks,
+      source: String(data?.source ?? "server"),
+    };
   } catch {
     return null;
   }
 }
-
-/* ---------------- Semantic Entities & Intent Parser ---------------- */
 
 const KNOWN_ARTISTS = [
-  "arijit singh", "arijit", "atif aslam", "atif", "the weeknd", "weeknd",
-  "taylor swift", "taylor", "diljit dosanjh", "diljit", "sidhu moose wala", "sidhu",
-  "kk", "shreya ghoshal", "kishore kumar", "lata mangeshkar", "mohit chauhan",
-  "prateek kuhad", "anuv jain", "drake", "billie eilish", "ed sheeran",
-  "eminem", "kendrick lamar", "post malone", "bruno mars", "sonu nigam",
-  "justin bieber", "coldplay", "imagine dragons", "alan walker", "ap dhillon",
-  "shubh", "karan aujla", "charlie puth", "adele", "lana del rey", "dua lipa",
+  "arijit singh", "arijit", "atif aslam", "atif", "taylor swift", "taylor",
+  "ed sheeran", "ed", "diljit dosanjh", "diljit", "shreya ghoshal", "kishore kumar",
+  "lata mangeshkar", "mohit chauhan", "sonu nigam", "bruno mars", "billie eilish",
+  "eminem", "coldplay", "drake", "post malone", "justin bieber", "anuv jain",
+  "prateek kuhad", "ap dhillon", "shubh", "karan aujla", "charlie puth", "adele",
+  "dua lipa", "lana del rey",
 ];
 
 const KNOWN_GENRES = [
   "phonk", "lofi", "ghazal", "rock", "pop", "hip hop", "rap", "sufi",
   "classical", "acoustic", "metal", "edm", "qawwali", "indie", "bollywood",
-  "punjabi", "k-pop", "kpop", "synthwave", "r&b", "jazz", "soul", "blues",
-  "ambient", "drill", "bhangra",
+  "punjabi", "k-pop", "kpop", "synthwave", "r&b", "jazz", "soul", "blues", "ambient", "drill", "bhangra"
 ];
 
 const KNOWN_ACTIVITIES = [
   { words: ["gym", "workout", "deadlift", "lift", "training", "cardio", "pump"], tag: "gym" },
   { words: ["late night", "night", "midnight", "nocturnal", "sleepless", "insomnia"], tag: "late night" },
   { words: ["driving", "drive", "road trip", "car ride", "highway"], tag: "driving" },
-  { words: ["study", "studying", "coding", "code", "work", "focus", "reading", "exam"], tag: "study" },
-  { words: ["sleep", "bedtime", "relax", "unwind", "nap"], tag: "sleep" },
-  { words: ["rain", "raining", "rainy", "monsoon", "barish"], tag: "rain" },
-  { words: ["party", "club", "dance", "dancing", "banger"], tag: "party" },
-  { words: ["breakup", "heartbreak", "heartbroken", "dumped", "ex", "crying", "alone"], tag: "heartbreak" },
-  { words: ["date", "dinner", "candlelight", "valentine"], tag: "date" },
-  { words: ["nostalgia", "nostalgic", "childhood", "90s", "2000s", "old school"], tag: "nostalgia" },
+  { words: ["exercise", "cardio", "workout"], tag: "gym" },
 ];
 
-const HINDI_EMOTIONS = [
-  { words: ["dard", "judai", "rona", "roye", "gham", "udas", "dil toot", "tanha", "bikhra"], mood: "sad" as MoodKey },
-  { words: ["khush", "khushi", "mast", "masti", "jashn", "nach", "maza"], mood: "happy" as MoodKey },
-  { words: ["pyar", "ishq", "mohobbat", "aashiq", "deewana", "sanam", "jaan"], mood: "romantic" as MoodKey },
-  { words: ["sukoon", "shanti", "halka", "thanda", "aaram"], mood: "calm" as MoodKey },
-  { words: ["josh", "dhamaka", "aag", "dum"], mood: "energetic" as MoodKey },
-];
-
-const LOCAL_KEYWORD_MAP: Record<MoodKey, string[]> = {
-  sad: [
-    "sad", "down", "depressed", "heartbroken", "lonely", "cry", "crying",
-    "upset", "miserable", "grief", "blue", "miss", "miss her", "miss him",
-    "hurt", "tired", "empty", "tear", "pain", "dark", "hopeless", "alone",
-  ],
-  happy: [
-    "happy", "joy", "great", "awesome", "excited", "good", "amazing",
-    "wonderful", "glad", "cheerful", "delighted", "grateful", "sunny",
-    "vibing", "celebrate", "smile", "laugh", "euphoric",
-  ],
-  romantic: [
-    "love", "romantic", "crush", "date", "valentine", "beloved", "heart",
-    "adore", "anniversary", "wedding", "beautiful", "cuddle", "together",
-    "intimate", "candlelight",
-  ],
-  energetic: [
-    "energy", "workout", "gym", "party", "dance", "pump", "run", "hype",
-    "power", "adrenaline", "fast", "epic", "extreme", "heavy", "lift",
-    "beast", "rage", "hardstyle", "club",
-  ],
-  calm: [
-    "calm", "relax", "peace", "sleep", "chill", "quiet", "meditate",
-    "soft", "gentle", "breathe", "evening", "rain", "slow", "ambient",
-    "serene", "tranquil", "soothing",
-  ],
-  focus: [
-    "focus", "study", "work", "concentrate", "code", "coding", "read",
-    "exam", "deep", "productive", "flow", "writing", "deadline", "lofi",
-    "instrumental", "background",
-  ],
-};
-
-function parseEntities(text: string) {
+function buildLocalQueries(text: string): string[] {
   const lower = text.toLowerCase();
-  const foundArtist = KNOWN_ARTISTS.find((a) => lower.includes(a));
-  const foundGenre = KNOWN_GENRES.find((g) => lower.includes(g));
-  const foundActivity = KNOWN_ACTIVITIES.find((act) => act.words.some((w) => lower.includes(w)))?.tag;
-  return { artist: foundArtist, genre: foundGenre, activity: foundActivity };
-}
-
-function detectLocalMood(text: string): MoodKey {
-  const lower = text.toLowerCase();
-
-  // Check Hindi sentiment first
-  for (const item of HINDI_EMOTIONS) {
-    if (item.words.some((w) => lower.includes(w))) {
-      return item.mood;
-    }
-  }
-
-  // Check English keyword weights
-  let bestMood: MoodKey = "calm";
-  let highestScore = 0;
-
-  (Object.keys(LOCAL_KEYWORD_MAP) as MoodKey[]).forEach((key) => {
-    const score = LOCAL_KEYWORD_MAP[key].reduce((acc, word) => {
-      return acc + (lower.includes(word) ? 1 : 0);
-    }, 0);
-    if (score > highestScore) {
-      highestScore = score;
-      bestMood = key;
-    }
-  });
-
-  return highestScore > 0 ? bestMood : "calm";
-}
-
-function mapEmotionToGoMood(emotions: DetectedEmotion[], polarity: "POSITIVE" | "NEGATIVE" | null): MoodKey {
-  if (!emotions.length) return polarity === "NEGATIVE" ? "sad" : "happy";
-
-  const top = emotions[0];
-  const label = top.label;
-
-  const sadLabels = ["sadness", "grief", "disappointment", "remorse", "embarrassment"];
-  const happyLabels = ["joy", "optimism", "gratitude", "amusement", "pride", "relief"];
-  const romanticLabels = ["love", "caring", "desire", "admiration"];
-  const energeticLabels = ["excitement", "anger", "annoyance"];
-  const calmLabels = ["nervousness", "fear", "approval"];
-  const focusLabels = ["curiosity", "realization", "neutral", "confusion"];
-
-  if (sadLabels.includes(label)) return "sad";
-  if (romanticLabels.includes(label)) return "romantic";
-  if (energeticLabels.includes(label)) return "energetic";
-  if (happyLabels.includes(label)) return "happy";
-  if (focusLabels.includes(label)) return "focus";
-  if (calmLabels.includes(label)) return "calm";
-
-  return polarity === "NEGATIVE" ? "sad" : "happy";
-}
-
-/* ---------------- Dynamic Targeted Song Query Synthesis ---------------- */
-
-function synthesizeQueries(
-  rawText: string,
-  mood: MoodKey,
-  entities: { artist?: string; genre?: string; activity?: string }
-): string[] {
-  const queries: string[] = [];
-  const { artist, genre, activity } = entities;
-
-  // 1 · Direct artist context
+  const artist = KNOWN_ARTISTS.find((a) => lower.includes(a));
   if (artist) {
-    if (mood === "sad") {
-      queries.push(`${artist} emotional sad song`);
-      queries.push(`${artist} heartbreak acoustic song`);
-    } else if (mood === "romantic") {
-      queries.push(`${artist} romantic love song`);
-      queries.push(`${artist} soulful acoustic ballad song`);
-    } else if (mood === "energetic") {
-      queries.push(`${artist} upbeat dance hit song`);
-      queries.push(`${artist} high energy anthem song`);
-    } else {
-      queries.push(`${artist} best acoustic song`);
-      queries.push(`${artist} popular single song`);
-    }
-    return queries;
+    return [`${artist} emotional song`, `${artist} popular tracks`, `${artist} hit songs`];
   }
 
-  // 2 · Activity + Genre context
+  const genre = KNOWN_GENRES.find((g) => lower.includes(g));
+  const activity = KNOWN_ACTIVITIES.find((a) => a.words.some((w) => lower.includes(w)))?.tag;
+  const fallbackMood = detectLocalMood(text);
+
   if (activity === "gym") {
-    queries.push(`${genre || "drift"} phonk workout song`);
-    queries.push("heavy gym adrenaline motivation song");
-    queries.push("beast mode workout anthem track");
-    return queries;
+    return [`${genre || "workout"} phonk song`, "gym motivation anthem", "workout power track"];
   }
-
-  if (activity === "late night" || activity === "sleep") {
-    queries.push("late night chill lofi beat");
-    queries.push("deep nocturnal calming acoustic song");
-    queries.push("peaceful sleep ambient track");
-    return queries;
+  if (activity === "late night") {
+    return ["late night calm song", "sleep lofi ambient", "peaceful night acoustic"];
   }
-
   if (activity === "driving") {
-    queries.push("night drive synthwave song");
-    queries.push("long drive chill vibe song");
-    return queries;
+    return ["long drive upbeat song", "night drive synthwave track", "road trip vibe song"];
   }
-
-  if (activity === "study") {
-    queries.push("deep focus chill lofi beat");
-    queries.push("study concentration piano track");
-    return queries;
-  }
-
-  if (activity === "rain") {
-    queries.push("rainy day melancholic acoustic song");
-    queries.push("rain aesthetic chill song");
-    return queries;
-  }
-
-  if (activity === "heartbreak") {
-    queries.push("heartbreak emotional acoustic song");
-    queries.push("sad piano ballad tearjerker song");
-    queries.push("deep emotional hurt acoustic song");
-    return queries;
-  }
-
-  // 3 · Genre-specific
   if (genre) {
-    queries.push(`${genre} hit song`);
-    queries.push(`${mood} ${genre} track`);
-    return queries;
+    return [`${genre} hit song`, `${fallbackMood} ${genre} track`];
   }
 
-  // 4 · Specific text blend (cleaned of punctuation, ensuring "song" is target)
-  const cleanInput = rawText
-    .replace(/[^a-zA-Z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (cleanInput.length > 3 && cleanInput.split(" ").length <= 4) {
-    queries.push(`${cleanInput} single song`);
-  }
-
-  // 5 · Mood-tuned queries targeting real individual songs (never playlists!)
-  const moodDef = MOODS.find((m) => m.key === mood) ?? MOODS[0];
-  queries.push(...moodDef.queries);
-
-  return Array.from(new Set(queries));
+  const def = MOODS.find((m) => m.key === fallbackMood) ?? MOODS[0];
+  return [...def.queries];
 }
-
-/* ---------------- Empathetic Studio Reply Generation ---------------- */
-
-function generateStudioReply(
-  mood: MoodKey,
-  rawText: string,
-  entities: { artist?: string; genre?: string; activity?: string },
-  topEmotion?: DetectedEmotion,
-  trackCount = 0
-): string {
-  const { artist, genre, activity } = entities;
-
-  if (artist) {
-    return `Dialed straight into ${artist.toUpperCase()} with ${mood} frequencies. Assembled ${trackCount} single tracks for your session. Hit Play All to start listening without interruptions.`;
-  }
-
-  if (activity === "gym") {
-    return `Adrenaline locked. Curated ${trackCount} hard-hitting phonk & workout tracks to keep your momentum high. Volume up.`;
-  }
-
-  if (activity === "late night" || activity === "sleep") {
-    return `Night mode active. Queued ${trackCount} gentle, uninterrupted nocturnal tracks to help you unwind and settle in.`;
-  }
-
-  if (activity === "heartbreak" || (topEmotion && topEmotion.label === "sadness" && topEmotion.score > 0.4)) {
-    return `I hear that heavy feeling. Here are ${trackCount} heartfelt, acoustic single tracks to hold space with you. Take it slow.`;
-  }
-
-  if (genre) {
-    return `Tuning your feed into ${genre.toUpperCase()} vibes. Handpicked ${trackCount} distinct tracks that match the exact tone you described.`;
-  }
-
-  const openers: Record<MoodKey, string> = {
-    happy: `Sunlit energy captured! Here are ${trackCount} feel-good single songs tuned to lift you higher.`,
-    sad: `Gentle melodies coming through. Assembled ${trackCount} comforting tracks to let you process and breathe.`,
-    romantic: `Candlelight frequencies active. Here are ${trackCount} warm, intimate love songs ready to flow.`,
-    energetic: `High tempo and full voltage. Queued ${trackCount} electrifying single songs to get you moving.`,
-    calm: `Still water and clear air. Queued ${trackCount} peaceful, ambient tracks to wash out the noise.`,
-    focus: `Deep work mode engaged. Curated ${trackCount} focused, distraction-free tracks for your flow state.`,
-  };
-
-  return openers[mood];
-}
-
-/* ---------------- Main Mood Analysis Export ---------------- */
 
 export interface MoodAnalysis {
   mood: MoodKey;
-  source: "huggingface" | "local";
-  sentiment: "POSITIVE" | "NEGATIVE" | null;
+  source: "huggingface" | "local" | "server";
+  sentiment?: "POSITIVE" | "NEGATIVE" | null;
   emotion?: string;
   reply: string;
   tracks: Track[];
@@ -362,79 +154,57 @@ export interface MoodAnalysis {
 
 export async function analyseMood(text: string): Promise<MoodAnalysis> {
   const trimmed = text.trim();
-  const entities = parseEntities(trimmed);
+  if (!trimmed) throw new Error("Mood prompt cannot be empty");
 
-  // 1 · Live HF Emotion + Sentiment classification
-  const [emotions, polarity] = await Promise.all([
-    hfDetectEmotions(trimmed),
-    hfSentimentPolarity(trimmed),
-  ]);
+  const localMood = detectLocalMood(trimmed);
+  const server = await callServerAnalyse(trimmed);
 
-  let mood: MoodKey;
-  let source: "huggingface" | "local" = "local";
-  let topEmotion: DetectedEmotion | undefined;
+  let mood = localMood;
+  let source: MoodAnalysis["source"] = "local";
+  let emotion: string | undefined;
+  let reply = "";
+  let tracks: Track[] = [];
 
-  if (emotions.length > 0) {
-    source = "huggingface";
-    topEmotion = emotions[0];
-    const local = detectLocalMood(trimmed);
+  if (server) {
+    source = server.source === "huggingface" ? "huggingface" : "server";
+    emotion = server.emotion;
+    reply = server.reply;
+    tracks = server.tracks;
 
-    // If local keyword or Hindi intent is very explicit, respect it; otherwise use GoEmotions
-    if (local !== "calm" && topEmotion.score < 0.35) {
-      mood = local;
+    if (localMood !== "calm" && server.mood === "calm") {
+      mood = localMood;
     } else {
-      mood = mapEmotionToGoMood(emotions, polarity);
+      mood = server.mood;
     }
-  } else if (polarity) {
-    source = "huggingface";
-    const local = detectLocalMood(trimmed);
-    mood = local !== "calm" ? local : polarity === "POSITIVE" ? "happy" : "sad";
-  } else {
-    mood = detectLocalMood(trimmed);
   }
 
-  // 2 · Synthesize single-song search queries (no playlist keywords)
-  const targetQueries = synthesizeQueries(trimmed, mood, entities);
-
-  // 3 · Multi-query harvesting for a continuous stream of 10 to 15 single songs
-  let harvested: Track[] = [];
-  const seenKeys = new Set<string>();
-
-  for (const q of targetQueries.slice(0, 3)) {
-    try {
-      const results = await searchTracks(q, 15);
-      for (const t of results) {
-        if (!isSingleTrack(t)) continue;
-        const k = songKey(t);
-        if (!seenKeys.has(k)) {
-          seenKeys.add(k);
-          harvested.push(t);
-        }
-        if (harvested.length >= 15) break;
-      }
-    } catch {
-      /* offline query */
+  if (!tracks.length) {
+    const queries = buildLocalQueries(trimmed).slice(0, 3);
+    for (const query of queries) {
+      const next = await searchTracks(query, 8).catch(() => [] as Track[]);
+      tracks = tracks.concat(next);
+      if (tracks.length >= 10) break;
     }
-    if (harvested.length >= 10) break;
   }
 
-  // 4 · Fallback only if live search is completely offline or empty
-  if (!harvested.length) {
-    const ids = MOOD_DEMO_MAP[mood] ?? [];
-    harvested = ids.map((id) => findsDemo(id)).filter(Boolean) as Track[];
-    if (!harvested.length) harvested = DEMO_TRACKS.slice(0, 6);
+  if (!tracks.length) {
+    const fallbackIds = MOOD_DEMO_MAP[mood] ?? [];
+    tracks = fallbackIds.map((id) => findsDemo(id)).filter(Boolean) as Track[];
+    if (!tracks.length) tracks = DEMO_TRACKS.slice(0, 6);
   }
 
-  const finalTracks = harvested.slice(0, 15);
-  const reply = generateStudioReply(mood, trimmed, entities, topEmotion, finalTracks.length);
+  const limited = tracks.slice(0, 12);
+  if (!reply) {
+    reply = `Here are ${limited.length} ${mood} tracks selected for how you feel.`;
+  }
 
   return {
     mood,
     source,
-    sentiment: polarity,
-    emotion: topEmotion?.label,
+    sentiment: null,
+    emotion,
     reply,
-    tracks: finalTracks,
+    tracks: limited,
   };
 }
 

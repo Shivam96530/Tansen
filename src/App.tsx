@@ -47,7 +47,7 @@ function Shell() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar />
         <MobileNav />
-        <main className="relative flex-1 overflow-y-auto pb-[130px]">
+        <main className="touch-scroll relative flex-1 overflow-y-auto pb-[calc(var(--player-h)+56px)]">
           <AnimatePresence mode="wait">
             <motion.div
               key={view}
