@@ -7,8 +7,8 @@ import type { LyricsResult, Track } from "../types";
  * In production, requests use same-origin relative paths (/api/...).
  * ------------------------------------------------------------------ */
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:5001" : "");
-const STREAM_BASE = import.meta.env.VITE_STREAM_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:5002" : "");
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
+const STREAM_BASE = (import.meta.env.VITE_STREAM_BASE_URL || "").replace(/\/+$/, "");
 
 const timeout = (ms: number) => {
   const ctrl = new AbortController();
@@ -174,7 +174,7 @@ export async function getAudioUrl(videoId: string): Promise<string | null> {
     t.done();
     if (res.ok) {
       const data = await res.json();
-      const url = data.audio_url ?? data.audioUrl ?? data.url ?? null;
+      const url = data.audio_url ?? data.audioUrl ?? data.url ?? data.proxy_url ?? null;
       if (url) return url;
     }
   } catch {

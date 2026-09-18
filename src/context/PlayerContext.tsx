@@ -370,7 +370,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
               }
             }
           } else if (engineRef.current === "audio" && audioRef.current) {
-            audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+            if (audioRef.current.paused) {
+              audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+            }
           }
         }
       } else {
@@ -379,11 +381,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("blur", onVisibilityChange);
     window.addEventListener("focus", onVisibilityChange);
     return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("blur", onVisibilityChange);
       window.removeEventListener("focus", onVisibilityChange);
     };
   }, []);
@@ -603,6 +603,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const playTrack = useCallback(
     (track: Track, list?: Track[], seedQuery?: string) => {
       wasPlayingBeforeHideRef.current = true;
+
+      // Pre-arm HTML5 audio element within synchronous user gesture to unlock mobile background audio
+      if (audioRef.current) {
+        try {
+          audioRef.current.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
+          audioRef.current.play().catch(() => {});
+        } catch {
+          /* ignore */
+        }
+      }
+
       if (list && list.length > 1) {
         // Explicit list playback
         flowRef.current = "queue";
@@ -628,6 +639,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const stepTo = useCallback(
     (idx: number) => {
+      // Pre-arm HTML5 audio element within user gesture
+      if (audioRef.current) {
+        try {
+          audioRef.current.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
+          audioRef.current.play().catch(() => {});
+        } catch {
+          /* ignore */
+        }
+      }
       const q = queueRef.current;
       if (idx < 0 || idx >= q.length) return;
       setQueueIndex(idx);

@@ -203,6 +203,7 @@ export async function getAudioStream(req, res) {
       return res.json({
         id: videoId,
         audio_url: audioUrl,
+        proxy_url: `/api/stream/${encodeURIComponent(videoId)}`,
         title: data?.title,
         duration: data?.duration ?? 0,
       });
@@ -219,5 +220,47 @@ export async function getAudioStream(req, res) {
       audio_url: null,
       note: "stream-unavailable",
     });
+  }
+}
+
+export async function proxyAudioStream(req, res) {
+  const videoId = String(req.params.videoId ?? "").trim();
+  const YT_ID_REGEX = /^[a-zA-Z0-9_-]{8,15}$/;
+  if (!videoId || !YT_ID_REGEX.test(videoId)) {
+    return res.status(400).send("Invalid videoId parameter");
+  }
+
+  try {
+    const { data } = await axios.get(
+      `${STREAM_BASE}/get-audio-url/${encodeURIComponent(videoId)}`,
+      { timeout: 20000 }
+    );
+    const audioUrl = data?.audio_url ?? data?.audioUrl ?? data?.url ?? null;
+    if (!audioUrl) {
+      return res.status(404).send("Stream unavailable");
+    }
+
+    const headers = {};
+    if (req.headers.range) {
+      headers.range = req.headers.range;
+    }
+
+    const streamRes = await axios.get(audioUrl, {
+      responseType: "stream",
+      headers,
+      timeout: 30000,
+    });
+
+    res.status(streamRes.status);
+    for (const [k, v] of Object.entries(streamRes.headers)) {
+      if (["content-type", "content-length", "content-range", "accept-ranges"].includes(k.toLowerCase())) {
+        res.setHeader(k, v);
+      }
+    }
+    streamRes.data.pipe(res);
+  } catch {
+    if (!res.headersSent) {
+      res.status(502).send("Audio streaming error");
+    }
   }
 }
