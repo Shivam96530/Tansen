@@ -860,7 +860,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const dismissTrackRef = useRef(dismissTrack);
   dismissTrackRef.current = dismissTrack;
 
-  /* ---- Native MediaSession API for mobile lockscreen & background controls ---- */
+  /* ---- Native MediaSession Metadata (set once per track) ---- */
   useEffect(() => {
     if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
 
@@ -893,10 +893,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     } catch {
       /* ignore */
     }
+  }, [current]);
+
+  /* ---- Native MediaSession Playback State & Position (throttled) ---- */
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator) || !current) return;
 
     navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
 
-    if ("setPositionState" in navigator.mediaSession && duration > 0) {
+    if ("setPositionState" in navigator.mediaSession && duration > 0 && isFinite(duration)) {
       try {
         navigator.mediaSession.setPositionState({
           duration: Math.max(duration, 1),
@@ -907,7 +912,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         /* ignore */
       }
     }
-  }, [current, isPlaying, duration, progress]);
+  }, [isPlaying, duration, Math.floor(progress)]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
