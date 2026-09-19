@@ -814,6 +814,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setQueueIndex((i) => (i === -1 ? 0 : i));
   }, []);
 
+  /* ---- Native MediaSession (Lockscreen & Background Controls) ---- */
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator) || !current) return;
+    const art = current.thumbnail || (current.id ? `https://i.ytimg.com/vi/${current.id}/hqdefault.jpg` : "");
+    navigator.mediaSession.metadata = new MediaMetadata({ title: current.title, artist: current.artist, album: "Tansen", artwork: art ? [{ src: art }] : [] });
+    navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+    navigator.mediaSession.setActionHandler("play", () => { engineRef.current === "youtube" ? ytPlayerRef.current?.playVideo?.() : audioRef.current?.play().catch(() => {}); setIsPlaying(true); });
+    navigator.mediaSession.setActionHandler("pause", () => { engineRef.current === "youtube" ? ytPlayerRef.current?.pauseVideo?.() : audioRef.current?.pause(); setIsPlaying(false); });
+    navigator.mediaSession.setActionHandler("nexttrack", () => next());
+    navigator.mediaSession.setActionHandler("previoustrack", () => prev());
+  }, [current, isPlaying, next, prev]);
+
   /* ---- Search ---- */
   const search = useCallback(async (q: string) => {
     setQuery(q);
