@@ -6,7 +6,6 @@ import SearchWorkspace from "./components/SearchWorkspace";
 import StudioWorkspace from "./components/StudioWorkspace";
 import ImmersivePlayer from "./components/ImmersivePlayer";
 import Artwork from "./components/Artwork";
-import BackgroundPermissionPrompt from "./components/BackgroundPermissionPrompt";
 
 function MiniPill() {
   const { current, isPlaying, isLoading, toggle, next, setImmersive, immersive, progress, duration, dismissTrack } = usePlayer();
@@ -131,9 +130,6 @@ function Shell() {
       <AnimatePresence>
         <ImmersivePlayer />
       </AnimatePresence>
-
-      {/* Mobile background audio permission & lockscreen controls prompt */}
-      <BackgroundPermissionPrompt />
     </div>
   );
 }

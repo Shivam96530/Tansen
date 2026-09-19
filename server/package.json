@@ -11,14 +11,14 @@
     "build": "npm --prefix .. install && npm --prefix .. run build"
   },
   "dependencies": {
-    "@distube/ytdl-core": "^4.16.12",
     "axios": "^1.7.9",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^8.2.1",
-    "helmet": "^8.1.0"
+    "helmet": "^8.1.0",
+    "tansen": "file:.."
   },
   "engines": {
     "node": ">=20 <23"

@@ -147,7 +147,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const radioBusy = useRef(false);
   const flowRef = useRef<"queue" | "autoplay">("autoplay");
   const seedQueryRef = useRef<string>("");
-  const wasPlayingBeforeHideRef = useRef(false);
 
   repeatRef.current = repeat;
   shuffleRef.current = shuffle;
@@ -310,7 +309,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                 if (event.data === 1) {
                   setIsPlaying(true);
                   setIsLoading(false);
-                  wasPlayingBeforeHideRef.current = true;
                   try {
                     ytPlayerRef.current?.unMute?.();
                     const dur = ytPlayerRef.current?.getDuration?.();
@@ -319,15 +317,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
                     /* ignore */
                   }
                 } else if (event.data === 2) {
-                  // If pause was caused by document being hidden on mobile, retain session so Chrome keeps notification pinned
-                  if (typeof document !== "undefined" && document.hidden && wasPlayingBeforeHideRef.current) {
-                    // Do not tear down session; Chrome keeps Android notification alive via audio anchor
-                  } else {
-                    wasPlayingBeforeHideRef.current = false;
-                    setIsPlaying(false);
-                  }
+                  setIsPlaying(false);
                 } else if (event.data === 0) {
-                  wasPlayingBeforeHideRef.current = false;
                   handleEndedRef.current();
                 } else if (event.data === 3) {
                   setIsLoading(true);
@@ -355,55 +346,51 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, [volume]);
 
-  /* ---- Mobile & Background Tab Persistence ---- */
+  /* ---- Keep playback alive when user switches browser tabs ---- */
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (typeof document === "undefined") return;
-      if (document.visibilityState === "visible") {
-        if (wasPlayingBeforeHideRef.current) {
-          if (engineRef.current === "youtube") {
-            const p = ytPlayerRef.current;
-            if (p && typeof p.playVideo === "function") {
+      if (keepPlaying.current && engineRef.current === "youtube") {
+        const p = ytPlayerRef.current;
+        if (p && typeof p.playVideo === "function") {
+          try {
+            p.playVideo();
+          } catch {
+            /* ignore */
+          }
+          setTimeout(() => {
+            if (keepPlaying.current) {
               try {
                 p.playVideo();
-                setIsPlaying(true);
               } catch {
                 /* ignore */
               }
             }
-          } else if (engineRef.current === "audio" && audioRef.current) {
-            if (audioRef.current.paused) {
-              audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
-            }
-          }
+          }, 150);
         }
-      } else {
-        wasPlayingBeforeHideRef.current = keepPlaying.current;
       }
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", onVisibilityChange);
+    window.addEventListener("blur", onVisibilityChange);
     return () => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", onVisibilityChange);
+      window.removeEventListener("blur", onVisibilityChange);
     };
   }, []);
 
-  /* ---- Background audio anchor to keep Chrome Android notification active ---- */
+  /* ---- Background audio heartbeat to prevent Chrome tab suspension ---- */
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
-    const SILENT_WAV = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
-    const active = isPlaying || wasPlayingBeforeHideRef.current;
-    if (engine === "youtube" && active) {
+    const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+    if (engine === "youtube" && isPlaying) {
       if (a.src !== SILENT_WAV) {
         a.src = SILENT_WAV;
         a.loop = true;
-        a.volume = 0.001;
+        a.volume = 0.01;
       }
       a.play().catch(() => {});
-    } else if (engine === "youtube" && !active) {
+    } else if (engine === "youtube" && !isPlaying) {
       a.pause();
     }
   }, [engine, isPlaying]);
@@ -443,9 +430,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const audio = new Audio();
     audio.preload = "auto";
     audio.volume = volume;
-    audio.setAttribute("playsinline", "true");
-    audio.setAttribute("webkit-playsinline", "true");
-    (audio as any).playsInline = true;
     audioRef.current = audio;
     if (typeof window !== "undefined") {
       (window as any).__TANSEN_AUDIO__ = audio;
@@ -592,7 +576,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   );
 
   const dismissTrack = useCallback(() => {
-    wasPlayingBeforeHideRef.current = false;
     stopAudio();
     setCurrent(null);
     setIsPlaying(false);
@@ -601,30 +584,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setDuration(0);
     setLyrics(null);
     setImmersive(false);
-
-    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
-      navigator.serviceWorker.ready
-        .then((reg) => {
-          reg.active?.postMessage({ type: "STOP_PLAYING" });
-        })
-        .catch(() => {});
-    }
   }, [stopAudio, setImmersive]);
 
   const playTrack = useCallback(
     (track: Track, list?: Track[], seedQuery?: string) => {
-      wasPlayingBeforeHideRef.current = true;
-
-      // Pre-arm HTML5 audio element within synchronous user gesture to unlock mobile background audio
-      if (audioRef.current) {
-        try {
-          audioRef.current.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
-          audioRef.current.play().catch(() => {});
-        } catch {
-          /* ignore */
-        }
-      }
-
       if (list && list.length > 1) {
         // Explicit list playback
         flowRef.current = "queue";
@@ -650,15 +613,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const stepTo = useCallback(
     (idx: number) => {
-      // Pre-arm HTML5 audio element within user gesture
-      if (audioRef.current) {
-        try {
-          audioRef.current.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
-          audioRef.current.play().catch(() => {});
-        } catch {
-          /* ignore */
-        }
-      }
       const q = queueRef.current;
       if (idx < 0 || idx >= q.length) return;
       setQueueIndex(idx);
@@ -811,7 +765,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const yt = ytPlayerRef.current;
       if (!yt) return;
       if (isPlaying) {
-        wasPlayingBeforeHideRef.current = false;
         try {
           yt.pauseVideo?.();
         } catch {
@@ -819,7 +772,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         }
         setIsPlaying(false);
       } else {
-        wasPlayingBeforeHideRef.current = true;
         try {
           yt.playVideo?.();
         } catch {
@@ -832,11 +784,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const a = audioRef.current;
     if (!a) return;
     if (isPlaying) {
-      wasPlayingBeforeHideRef.current = false;
       a.pause();
       setIsPlaying(false);
     } else {
-      wasPlayingBeforeHideRef.current = true;
       a.play().then(() => setIsPlaying(true)).catch(() => {});
     }
   }, [current, isPlaying]);
@@ -862,217 +812,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const enqueue = useCallback((t: Track) => {
     setQueue((q) => (q.some((x) => x.id === t.id) ? q : [...q, t]));
     setQueueIndex((i) => (i === -1 ? 0 : i));
-  }, []);
-
-  const nextRef = useRef(next);
-  nextRef.current = next;
-  const prevRef = useRef(prev);
-  prevRef.current = prev;
-  const dismissTrackRef = useRef(dismissTrack);
-  dismissTrackRef.current = dismissTrack;
-
-  /* ---- Native MediaSession Metadata (set once per track) ---- */
-  useEffect(() => {
-    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
-
-    if (!current) {
-      navigator.mediaSession.metadata = null;
-      navigator.mediaSession.playbackState = "none";
-      return;
-    }
-
-    const artworkSrc =
-      current.thumbnail ||
-      (current.id ? `https://i.ytimg.com/vi/${current.id}/hqdefault.jpg` : "");
-
-    try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: current.title,
-        artist: current.artist,
-        album: "Tansen",
-        artwork: artworkSrc
-          ? [
-              { src: artworkSrc, sizes: "96x96", type: "image/jpeg" },
-              { src: artworkSrc, sizes: "128x128", type: "image/jpeg" },
-              { src: artworkSrc, sizes: "192x192", type: "image/jpeg" },
-              { src: artworkSrc, sizes: "256x256", type: "image/jpeg" },
-              { src: artworkSrc, sizes: "384x384", type: "image/jpeg" },
-              { src: artworkSrc, sizes: "512x512", type: "image/jpeg" },
-            ]
-          : [],
-      });
-    } catch {
-      /* ignore */
-    }
-  }, [current]);
-
-  /* ---- Native MediaSession Playback State & Position (throttled) ---- */
-  useEffect(() => {
-    if (typeof window === "undefined" || !("mediaSession" in navigator) || !current) return;
-
-    const effectivePlaying = isPlaying || Boolean(typeof document !== "undefined" && document.hidden && wasPlayingBeforeHideRef.current);
-    navigator.mediaSession.playbackState = effectivePlaying ? "playing" : "paused";
-
-    if ("setPositionState" in navigator.mediaSession && duration > 0 && isFinite(duration)) {
-      try {
-        navigator.mediaSession.setPositionState({
-          duration: Math.max(duration, 1),
-          playbackRate: 1,
-          position: Math.min(Math.max(progress, 0), duration),
-        });
-      } catch {
-        /* ignore */
-      }
-    }
-  }, [isPlaying, duration, Math.floor(progress)]);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
-
-    const actionHandlers: [MediaSessionAction, MediaSessionActionHandler][] = [
-      [
-        "play",
-        () => {
-          wasPlayingBeforeHideRef.current = true;
-          if (engineRef.current === "youtube") {
-            try {
-              ytPlayerRef.current?.playVideo?.();
-            } catch {
-              /* ignore */
-            }
-          } else if (audioRef.current) {
-            audioRef.current.play().catch(() => {});
-          }
-          setIsPlaying(true);
-          if (typeof window !== "undefined" && "mediaSession" in navigator) {
-            navigator.mediaSession.playbackState = "playing";
-          }
-        },
-      ],
-      [
-        "pause",
-        () => {
-          wasPlayingBeforeHideRef.current = false;
-          if (engineRef.current === "youtube") {
-            try {
-              ytPlayerRef.current?.pauseVideo?.();
-            } catch {
-              /* ignore */
-            }
-          } else if (audioRef.current) {
-            audioRef.current.pause();
-          }
-          setIsPlaying(false);
-          if (typeof window !== "undefined" && "mediaSession" in navigator) {
-            navigator.mediaSession.playbackState = "paused";
-          }
-        },
-      ],
-      ["previoustrack", () => prevRef.current()],
-      ["nexttrack", () => nextRef.current()],
-      [
-        "seekto",
-        (details) => {
-          if (typeof details.seekTime === "number") {
-            seekToRef.current(details.seekTime);
-          }
-        },
-      ],
-      [
-        "seekbackward",
-        (details) => {
-          const offset = details.seekOffset || 10;
-          seekToRef.current(Math.max(0, (progress || 0) - offset));
-        },
-      ],
-      [
-        "seekforward",
-        (details) => {
-          const offset = details.seekOffset || 10;
-          seekToRef.current(Math.min(durationRef.current, (progress || 0) + offset));
-        },
-      ],
-      ["stop", () => dismissTrackRef.current()],
-    ];
-
-    for (const [action, handler] of actionHandlers) {
-      try {
-        navigator.mediaSession.setActionHandler(action, handler);
-      } catch {
-        /* ignore unsupported actions */
-      }
-    }
-
-    return () => {
-      for (const [action] of actionHandlers) {
-        try {
-          navigator.mediaSession.setActionHandler(action, null);
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-  }, [progress]);
-
-  /* ---- Service Worker Background Media Notification Sync ---- */
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
-    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-
-    navigator.serviceWorker.ready
-      .then((reg) => {
-        reg.active?.postMessage({
-          type: "UPDATE_PLAYING",
-          track: current,
-          isPlaying,
-        });
-      })
-      .catch(() => {});
-  }, [current, isPlaying]);
-
-  /* ---- Service Worker Remote Notification Action Listener ---- */
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
-
-    const handleMessage = (event: MessageEvent) => {
-      const data = event.data;
-      if (!data || data.type !== "SW_ACTION") return;
-
-      if (data.action === "play") {
-        wasPlayingBeforeHideRef.current = true;
-        if (engineRef.current === "youtube") {
-          try {
-            ytPlayerRef.current?.playVideo?.();
-          } catch {
-            /* ignore */
-          }
-        } else if (audioRef.current) {
-          audioRef.current.play().catch(() => {});
-        }
-        setIsPlaying(true);
-      } else if (data.action === "pause") {
-        wasPlayingBeforeHideRef.current = false;
-        if (engineRef.current === "youtube") {
-          try {
-            ytPlayerRef.current?.pauseVideo?.();
-          } catch {
-            /* ignore */
-          }
-        } else if (audioRef.current) {
-          audioRef.current.pause();
-        }
-        setIsPlaying(false);
-      } else if (data.action === "next") {
-        nextRef.current();
-      } else if (data.action === "prev") {
-        prevRef.current();
-      }
-    };
-
-    navigator.serviceWorker.addEventListener("message", handleMessage);
-    return () => {
-      navigator.serviceWorker.removeEventListener("message", handleMessage);
-    };
   }, []);
 
   /* ---- Search ---- */
