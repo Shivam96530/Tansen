@@ -17,9 +17,16 @@
   </head>
   <body>
     <div id="root"></div>
-    <div id="yt-player-container" style="position:fixed;bottom:0;right:0;width:1px;height:1px;opacity:0.01;overflow:hidden;pointer-events:none;z-index:-1;">
+    <div id="yt-player-container" style="position:fixed;bottom:8px;right:8px;width:64px;height:64px;opacity:0.12;overflow:hidden;pointer-events:none;z-index:1;border-radius:8px;">
       <div id="tansen-yt-player"></div>
     </div>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
     <script src="https://www.youtube.com/iframe_api"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -11,6 +11,7 @@
     "build": "npm --prefix .. install && npm --prefix .. run build"
   },
   "dependencies": {
+    "@distube/ytdl-core": "^4.16.12",
     "axios": "^1.7.9",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",

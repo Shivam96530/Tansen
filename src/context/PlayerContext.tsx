@@ -601,6 +601,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setDuration(0);
     setLyrics(null);
     setImmersive(false);
+
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      navigator.serviceWorker.ready
+        .then((reg) => {
+          reg.active?.postMessage({ type: "STOP_PLAYING" });
+        })
+        .catch(() => {});
+    }
   }, [stopAudio, setImmersive]);
 
   const playTrack = useCallback(
@@ -1005,6 +1013,67 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
     };
   }, [progress]);
+
+  /* ---- Service Worker Background Media Notification Sync ---- */
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+
+    navigator.serviceWorker.ready
+      .then((reg) => {
+        reg.active?.postMessage({
+          type: "UPDATE_PLAYING",
+          track: current,
+          isPlaying,
+        });
+      })
+      .catch(() => {});
+  }, [current, isPlaying]);
+
+  /* ---- Service Worker Remote Notification Action Listener ---- */
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+
+    const handleMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || data.type !== "SW_ACTION") return;
+
+      if (data.action === "play") {
+        wasPlayingBeforeHideRef.current = true;
+        if (engineRef.current === "youtube") {
+          try {
+            ytPlayerRef.current?.playVideo?.();
+          } catch {
+            /* ignore */
+          }
+        } else if (audioRef.current) {
+          audioRef.current.play().catch(() => {});
+        }
+        setIsPlaying(true);
+      } else if (data.action === "pause") {
+        wasPlayingBeforeHideRef.current = false;
+        if (engineRef.current === "youtube") {
+          try {
+            ytPlayerRef.current?.pauseVideo?.();
+          } catch {
+            /* ignore */
+          }
+        } else if (audioRef.current) {
+          audioRef.current.pause();
+        }
+        setIsPlaying(false);
+      } else if (data.action === "next") {
+        nextRef.current();
+      } else if (data.action === "prev") {
+        prevRef.current();
+      }
+    };
+
+    navigator.serviceWorker.addEventListener("message", handleMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener("message", handleMessage);
+    };
+  }, []);
 
   /* ---- Search ---- */
   const search = useCallback(async (q: string) => {
