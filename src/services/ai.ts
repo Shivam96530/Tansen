@@ -207,3 +207,4 @@ export async function analyseMood(text: string): Promise<MoodAnalysis> {
 export function moodLabel(key: MoodKey) {
   return MOODS.find((m) => m.key === key)?.label ?? key;
 }
+

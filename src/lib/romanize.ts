@@ -1,9 +1,12 @@
 /**
- * Zero-dependency Indic (Devanagari & Gurmukhi) Romanizer for song lyrics.
+ * Zero-dependency Indic (Devanagari & Gurmukhi) and Perso-Arabic (Urdu)
+ * Romanizer for song lyrics.
  *
- * Converts Hindi, Punjabi, and Sanskrit script lyrics into natural, phonetic
- * Roman text (chat/WhatsApp/karaoke style: "tum hi ho", "tere vaaste", "mera", "dil")
- * while preserving English lyrics, numbers, punctuation, and unsupported characters byte-for-byte.
+ * Converts Hindi, Punjabi, and Urdu script lyrics into natural, phonetic
+ * Roman text (chat/WhatsApp/karaoke style: "tum hi ho", "tere vaaste",
+ * "qismat mein meri chain se jeena likh de", "tajdar-e haram")
+ * while preserving English lyrics, numbers, punctuation, and unsupported
+ * characters byte-for-byte.
  */
 
 // Devanagari maps
@@ -39,7 +42,7 @@ const GUR_VOWELS: Record<string, string> = {
 
 const GUR_MATRAS: Record<string, string> = {
   "ਾ": "aa", "ਿ": "i", "ੀ": "ee", "ੁ": "u", "ੂ": "oo",
-  "ੇ": "e", "ੈ": "ai", "ੋ": "o", "ੌ": "au",
+  "ੇ": "e", "ੈ": "ai", "ੋ": "o", "ਔ": "au",
 };
 
 const GUR_CONSONANTS: Record<string, string> = {
@@ -63,7 +66,126 @@ const GUR_TIPPI = "\u0A70";
 const GUR_ADDAK = "\u0A71";
 
 const INDIC_SCRIPT_REGEX = /[\u0900-\u097F\u0A00-\u0A7F]/;
+const URDU_SCRIPT_REGEX = /[\u0600-\u06FF]/;
+const ROMANIZABLE_SCRIPT_REGEX = /[\u0900-\u097F\u0A00-\u0A7F\u0600-\u06FF]/;
 const WORD_SPLIT_REGEX = /([^\p{L}\p{N}]+)/u;
+
+// Urdu mappings
+const URDU_CHARS: Record<string, string> = {
+  "آ": "aa", "ا": "a", "أ": "a", "إ": "i",
+  "ب": "b", "پ": "p", "ت": "t", "ٹ": "t", "ث": "s",
+  "ج": "j", "چ": "ch", "ح": "h", "خ": "kh",
+  "د": "d", "ڈ": "d", "ذ": "z",
+  "ر": "r", "ڑ": "r", "ز": "z", "ژ": "zh",
+  "س": "s", "ش": "sh", "ص": "s", "ض": "z",
+  "ط": "t", "ظ": "z",
+  "ع": "a", "غ": "gh",
+  "ف": "f", "ق": "q",
+  "ک": "k", "ك": "k", "گ": "g",
+  "ل": "l", "م": "m", "ن": "n", "ں": "n",
+  "و": "o",
+  "ہ": "h", "ۂ": "h", "ۃ": "t", "ھ": "h",
+  "ی": "i", "ي": "i", "ے": "e", "ۓ": "e",
+  "ء": "", "ئ": "y",
+};
+
+const URDU_ASPIRATES: Record<string, string> = {
+  "بھ": "bh", "پھ": "ph", "تھ": "th", "ٹھ": "th", "جھ": "jh", "چھ": "chh",
+  "دھ": "dh", "ڈھ": "dh", "کھ": "kh", "گھ": "gh", "رھ": "rh", "ڑھ": "rh",
+  "لھ": "lh", "مھ": "mh", "نھ": "nh",
+};
+
+// High-frequency Urdu / Coke Studio / Qawwali / Bollywood words
+const URDU_LEXICON: Record<string, string> = {
+  "قسمت": "qismat", "میں": "mein", "مری": "meri", "چین": "chain", "سے": "se",
+  "جینا": "jeena", "لکھ": "likh", "دے": "de", "ڈوبے": "doobe", "نہ": "na",
+  "کبھی": "kabhi", "میرا": "mera", "سفینہ": "safeena", "جنت": "jannat",
+  "بھی": "bhi", "گوارا": "gawara", "ہے": "hai", "مگر": "magar", "میرے": "mere",
+  "لئے": "liye", "لیے": "liye", "اے": "ae", "کاتب": "katib", "تقدیر": "taqdeer",
+  "مدینہ": "madina", "تاجدار": "tajdar", "حرم": "haram", "ہو": "ho",
+  "نگاہ": "nigah", "کرم": "karam", "ہم": "hum", "غریبوں": "ghareebon",
+  "کے": "ke", "دن": "din", "سنور": "sanwar", "جائیں": "jayen", "گے": "ge",
+  "حامی": "haami", "بے": "be", "کساں": "kasaan", "کیا": "kya", "کہے": "kahe",
+  "گا": "ga", "جہاں": "jahan", "آپ": "aap", "در": "dar", "خالی": "khaali",
+  "اگر": "agar", "کوئی": "koi", "اپنا": "apna", "نہیں": "nahin", "غم": "gham",
+  "مارے": "maare", "ہیں": "hain", "پہ": "peh", "فریاد": "faryaad", "لائے": "laaye",
+  "ورنہ": "warna", "چوکھٹ": "chaukhat", "کا": "ka", "نام": "naam", "لے": "le",
+  "مر": "mar", "تم": "tum", "کہوں": "kahoon", "عرب": "arab", "کنور": "kanwar",
+  "جانتے": "jaante", "من": "man", "کی": "ki", "بتیاں": "batiyan", "فرقت": "furqat",
+  "تو": "tu", "امّی": "ummi", "لقب": "laqab", "کاٹے": "kaate", "کٹے": "kate",
+  "اب": "ab", "رتیاں": "ratiyan", "توری": "tori", "پریت": "preet", "سدھ": "sudh",
+  "بدھ": "budh", "سب": "sab", "بسری": "bisri", "کب": "kab", "تک": "tak",
+  "یہ": "yeh", "رہیگی": "rahegi", "خبری": "khabri", "گاہے": "gaahe",
+  "بفگن": "bafgan", "دزدیدہ": "duzdeeda", "نظر": "nazar", "سن": "sun",
+  "لو": "lo", "ہمری": "hamri", "گیا": "gaya", "اپنے": "apne", "دامن": "daaman",
+  "کو": "ko", "بھر": "bhar", "سوالی": "sawali", "حبیب": "habeeb", "حزیں": "hazeen",
+  "پر": "par", "آقا": "aaqa", "اوراق": "auraaq", "ہستی": "hasti", "بکھر": "bikhar",
+  "مے": "maye", "کشو": "kasho", "آؤ": "aao", "مدینے": "madine", "چلیں": "chalein",
+  "اسی": "issi", "مہینے": "maheene", "تجلّیوں": "tajalliyon", "عجب": "ajab",
+  "فضا": "faza", "شوق": "shauq", "انتہا": "inteha", "حیات": "hayaat",
+  "خوف": "khauf", "قضا": "qaza", "نماز": "namaaz", "عشق": "ishq",
+  "کریں": "karein", "ادا": "ada", "براہ": "baraah", "راست": "raast",
+  "راہ": "raah", "خدا": "khuda", "دست": "dast", "ثاقی": "saaqi",
+  "کوثر": "kausar", "پینے": "peene", "یاد": "yaad", "رکھو": "rakho",
+  "اک": "ik", "اٹھ": "uth", "جتنے": "jitne", "جام": "jaam", "وہ": "woh",
+  "طوفان": "toofan", "بجلیوں": "bijliyon", "ڈر": "dar", "سخت": "sakht",
+  "مشکل": "mushkil", "کدھر": "kidhar", "ہی": "hi", "گر": "gar", "لیں": "lein",
+  "ہماری": "hamaari", "خبر": "khabar", "مصیبت": "museebat", "یا": "ya",
+  "مصطفیٰ": "mustafa", "مجتبیٰ": "mujtaba", "ارحم": "irham", "لنا": "lana",
+  "تجھ": "tujh", "گل": "gul", "قسم": "qasam", "روشن": "roshan",
+  "دل": "dil", "بات": "baat", "رات": "raat", "ساتھ": "saath", "یار": "yaar",
+  "عاشق": "aashiq", "چاند": "chaand", "تارے": "taare", "محبت": "mohabbat",
+  "آواز": "aawaaz", "تیری": "teri", "تیرا": "tera", "تیرے": "tere",
+  "ہمیں": "humein", "تمہیں": "tumhein", "زندگی": "zindagi", "دعا": "dua",
+  "کون": "kaun", "جا": "jaa", "رہا": "raha", "رہی": "rahi", "رہے": "rahe",
+  "تھا": "tha", "تھی": "thi", "تھے": "the", "سنا": "suna", "کہا": "kaha",
+  "دیکھ": "dekh", "دیکھا": "dekha", "آیا": "aaya", "آئی": "aayi", "آئے": "aaye",
+  "بول": "bol", "سوچ": "soch", "جان": "jaan", "چاہ": "chaah", "چاہتا": "chahta",
+};
+
+function transliterateUrduWord(raw: string): string {
+  if (!raw) return raw;
+  let word = raw.trim();
+  let izafat = false;
+
+  // Izafat: word ends with Zer (\u0650) or He with Hamza (ۂ)
+  if (word.endsWith("\u0650") || word.endsWith("ِ") || word.endsWith("ۂ")) {
+    izafat = true;
+    word = word.replace(/[\u0650ِۂ]$/, "");
+  }
+
+  // Strip non-letter diacritics for dictionary lookup
+  const clean = word.replace(/[\u064B-\u065F\u0670]/g, "");
+
+  if (URDU_LEXICON[clean]) return URDU_LEXICON[clean] + (izafat ? "-e" : "");
+  if (URDU_LEXICON[word]) return URDU_LEXICON[word] + (izafat ? "-e" : "");
+
+  let out = "";
+  let i = 0;
+  while (i < clean.length) {
+    const pair = clean.slice(i, i + 2);
+    if (URDU_ASPIRATES[pair]) {
+      out += URDU_ASPIRATES[pair];
+      i += 2;
+      continue;
+    }
+    const ch = clean[i];
+    if (URDU_CHARS[ch] !== undefined) {
+      out += URDU_CHARS[ch];
+    } else {
+      out += ch;
+    }
+    i++;
+  }
+
+  // Polish end-of-word 'h' after consonant to 'a' (e.g. 'safeenh' -> 'safeena')
+  if (out.length > 2 && out.endsWith("h") && !/[aeiouy]h$/i.test(out)) {
+    out = out.slice(0, -1) + "a";
+  }
+
+  if (izafat) out += "-e";
+  return out;
+}
 
 function appendConsonant(cons: string, word: string, nextIdx: number): { text: string; advance: number } {
   const nextChar = word[nextIdx];
@@ -80,7 +202,7 @@ function appendConsonant(cons: string, word: string, nextIdx: number): { text: s
   return { text: cons + "a", advance: 0 };
 }
 
-function transliterateWord(word: string): string {
+function transliterateIndicWord(word: string): string {
   if (!word || !INDIC_SCRIPT_REGEX.test(word)) return word;
 
   let out = "";
@@ -195,18 +317,26 @@ function postProcessPhonetics(text: string): string {
 }
 
 /**
- * Romanize only supported Indic characters; English, Latin, numbers,
- * and punctuation stay untouched byte-for-byte.
+ * Romanize Indic (Devanagari, Gurmukhi) and Perso-Arabic (Urdu) lyrics;
+ * English, Latin, numbers, and punctuation stay untouched byte-for-byte.
  */
 export function romanizeLyrics(text: string): string {
-  if (!text || !INDIC_SCRIPT_REGEX.test(text)) return text;
+  if (!text || !ROMANIZABLE_SCRIPT_REGEX.test(text)) return text;
 
   return text
     .split(WORD_SPLIT_REGEX)
-    .map((token) => transliterateWord(token))
+    .map((token) => {
+      if (INDIC_SCRIPT_REGEX.test(token)) {
+        return transliterateIndicWord(token);
+      }
+      if (URDU_SCRIPT_REGEX.test(token)) {
+        return transliterateUrduWord(token);
+      }
+      return token;
+    })
     .join("");
 }
 
 export function hasRomanizableScript(text: string): boolean {
-  return INDIC_SCRIPT_REGEX.test(text);
+  return ROMANIZABLE_SCRIPT_REGEX.test(text);
 }

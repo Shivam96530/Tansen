@@ -6,6 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import axios from "axios";
 import apiRoutes from "./routes/api.js";
+import streamProxy from "./streamProxy.cjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -98,6 +99,8 @@ app.get("/api/stream-health", async (_req, res) => {
     return res.status(503).json({ status: "offline", service: "stream-engine" });
   }
 });
+
+app.get("/api/stream/:id", streamProxy);
 
 app.use("/api", apiRoutes);
 

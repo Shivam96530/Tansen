@@ -6,7 +6,10 @@ import { searchLimiter, lyricsLimiter, audioLimiter, aiLimiter } from "../lib/ra
 
 const router = Router();
 
+import streamProxy from "../streamProxy.cjs";
+
 router.get("/search", searchLimiter, searchSongs);
+router.get("/stream/:id", streamProxy);
 router.get("/lyrics", lyricsLimiter, getLyrics);
 router.get("/get-audio-url/:videoId", audioLimiter, getAudioStream);
 router.post("/ai/analyse", aiLimiter, analyseMood);

@@ -71,12 +71,42 @@ export default function ImmersivePlayer() {
   }, [current?.id]);
 
   const lines: LrcLine[] = useMemo(
-    () => (lyrics?.syncedLyrics ? parseLrc(lyrics.syncedLyrics) : []),
-    [lyrics?.syncedLyrics]
+    () => (lyrics?.syncedLyrics ? parseLrc(lyrics.syncedLyrics, duration, lyrics?.refDuration) : []),
+    [lyrics?.syncedLyrics, duration, lyrics?.refDuration]
   );
 
-  // Professional acoustic lead compensation (0.32s): ensures text appears right as the singer articulates the syllable
-  const activeIdx = activeIndex(lines, progress, 0.32);
+  // High-frequency audio clock tracking: syncs directly with HTML5 Audio at 60fps
+  // Eliminates the 250ms latency of the browser's timeupdate event for rap & fast lyrics
+  const [activeIdx, setActiveIdx] = useState<number>(() => activeIndex(lines, progress));
+
+  useEffect(() => {
+    if (!lines.length) {
+      setActiveIdx(-1);
+      return;
+    }
+
+    const initialIdx = activeIndex(lines, progress);
+    setActiveIdx(initialIdx);
+
+    if (!immersive || !isPlaying) return;
+
+    let rafId: number;
+    let lastIdx = initialIdx;
+
+    const tick = () => {
+      const audio = (window as any).__TANSEN_AUDIO__ as HTMLAudioElement | undefined;
+      const cur = audio && !audio.paused ? audio.currentTime : progress;
+      const newIdx = activeIndex(lines, cur);
+      if (newIdx !== lastIdx) {
+        lastIdx = newIdx;
+        setActiveIdx(newIdx);
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [immersive, isPlaying, lines, progress]);
 
   const romanizedPlainLyrics = useMemo(
     () => (lyrics?.lyrics ? romanizeLyrics(lyrics.lyrics) : ""),
@@ -257,58 +287,77 @@ export default function ImmersivePlayer() {
             </div>
           ) : lines.length > 0 ? (
             <div className="flex w-full flex-col items-center justify-center text-center">
-              <AnimatePresence mode="wait">
-                {(() => {
-                  const activeLine = activeIdx >= 0 && activeIdx < lines.length ? lines[activeIdx] : null;
-                  if (!activeLine) {
-                    return (
-                      <motion.div
-                        key="intro"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 0.4 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.3 }}
-                        className="flex items-center justify-center gap-2 font-display text-3xl text-mist"
-                      >
-                        <span>♪</span>
-                      </motion.div>
-                    );
-                  }
-                  const raw = activeLine.text.trim();
-                  const romanized = raw ? romanizeLyrics(raw) : "";
-                  if (!romanized) {
-                    // Empty timestamp row represents instrumental gap
-                    return (
-                      <motion.div
-                        key={`gap-${activeIdx}`}
-                        initial={{ opacity: 0, scale: 0.96 }}
-                        animate={{ opacity: 0.6, scale: 1 }}
-                        exit={{ opacity: 0, scale: 1.02 }}
-                        transition={{ duration: 0.3 }}
-                        className="flex items-center justify-center gap-2.5 font-display text-3xl text-mist/60"
-                      >
-                        <span>♪</span>
-                        <span className="font-mono text-xs uppercase tracking-[0.25em] text-mist/40">
-                          Instrumental
-                        </span>
-                      </motion.div>
-                    );
-                  }
+              {(() => {
+                const activeLine = activeIdx >= 0 && activeIdx < lines.length ? lines[activeIdx] : null;
+                if (!activeLine) {
                   return (
-                    <motion.p
-                      key={`line-${activeIdx}`}
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-                      className="font-display text-[clamp(2rem,5vw,3.4rem)] font-semibold leading-tight text-paper select-none text-center mx-auto transition-transform duration-300 group-hover:scale-[1.01]"
-                      style={{ textShadow: `0 0 35px ${palette.primary}` }}
+                    <motion.div
+                      key="intro"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 0.4 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.3 }}
+                      className="flex items-center justify-center gap-2 font-display text-3xl text-mist"
                     >
-                      {romanized}
-                    </motion.p>
+                      <span>♪</span>
+                    </motion.div>
                   );
-                })()}
-              </AnimatePresence>
+                }
+                const raw = activeLine.text.trim();
+                const romanized = raw ? romanizeLyrics(raw) : "";
+                if (!romanized) {
+                  // Empty timestamp row represents instrumental gap
+                  return (
+                    <motion.div
+                      key={`gap-${activeIdx}`}
+                      initial={{ opacity: 0, scale: 0.96 }}
+                      animate={{ opacity: 0.6, scale: 1 }}
+                      exit={{ opacity: 0, scale: 1.02 }}
+                      transition={{ duration: 0.2 }}
+                      className="flex items-center justify-center gap-2.5 font-display text-3xl text-mist/60"
+                    >
+                      <span>♪</span>
+                      <span className="font-mono text-xs uppercase tracking-[0.25em] text-mist/40">
+                        Instrumental
+                      </span>
+                    </motion.div>
+                  );
+                }
+
+                // Neighboring lines for vocal and rap cadence context
+                const prevLine = activeIdx > 0 ? lines[activeIdx - 1] : null;
+                const nextLine = activeIdx + 1 < lines.length ? lines[activeIdx + 1] : null;
+                const prevRomanized = prevLine?.text?.trim() ? romanizeLyrics(prevLine.text.trim()) : "";
+                const nextRomanized = nextLine?.text?.trim() ? romanizeLyrics(nextLine.text.trim()) : "";
+
+                return (
+                  <div className="flex flex-col items-center justify-center space-y-1.5 sm:space-y-2.5 w-full">
+                    {prevRomanized && (
+                      <p className="font-display text-xs sm:text-sm font-normal text-mist/35 line-clamp-1 select-none transition-opacity duration-200">
+                        {prevRomanized}
+                      </p>
+                    )}
+                    <AnimatePresence mode="popLayout">
+                      <motion.p
+                        key={`line-${activeIdx}`}
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+                        className="font-display text-[clamp(1.75rem,4.5vw,3rem)] font-semibold leading-tight text-paper select-none text-center mx-auto transition-transform duration-200 group-hover:scale-[1.01]"
+                        style={{ textShadow: `0 0 35px ${palette.primary}` }}
+                      >
+                        {romanized}
+                      </motion.p>
+                    </AnimatePresence>
+                    {nextRomanized && (
+                      <p className="font-display text-xs sm:text-sm font-normal text-mist/45 line-clamp-1 select-none transition-opacity duration-200">
+                        {nextRomanized}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           ) : romanizedPlainLyrics ? (
             <div className="touch-scroll flex max-h-[340px] w-full max-w-2xl flex-col overflow-y-auto space-y-5 py-4 text-center mx-auto sm:max-h-[440px]">

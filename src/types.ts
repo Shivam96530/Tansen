@@ -18,6 +18,8 @@ export interface LyricsResult {
   syncedLyrics?: string | null;
   source?: string;
   confidence?: number;
+  note?: string;
+  refDuration?: number;
 }
 
 export type MoodKey =

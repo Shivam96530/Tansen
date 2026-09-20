@@ -3,7 +3,7 @@ import type { LyricsResult, Track } from "../types";
 
 /* ------------------------------------------------------------------
  * Service endpoints:
- *   Express API (canonical bridge) → /api/search, /api/lyrics, /api/get-audio-url
+ *   Express API (canonical bridge) → /api/search, /api/lyrics, /api/stream/:id, /api/get-audio-url
  * In production, requests use same-origin relative paths (/api/...).
  * ------------------------------------------------------------------ */
 
@@ -161,8 +161,26 @@ export async function getRelatedTracks(
 }
 
 /* ---------------- audio stream ----------------
- * Flask → /get-audio-url/<video_id> (yt-dlp extracts the direct
- * .m4a stream URL — nothing is downloaded server-side). */
+ * The <audio> element plays a SAME-ORIGIN URL that our server proxies
+ * (Express /api/stream/:id → Flask /stream/:id → googlevideo, with Range support).
+ *
+ * Why not hand the browser the raw googlevideo URL that yt-dlp returns?
+ * Those URLs are locked to the IP address of the machine that resolved them,
+ * so the phone gets a 403 and the player silently falls back to the YouTube
+ * iframe — which the OS pauses the moment the screen locks.
+ *
+ * Returns candidate URLs in the order they should be tried. */
+
+export function getStreamSources(videoId: string): string[] {
+  const id = encodeURIComponent(videoId);
+  const sources = [`${API_BASE}/api/stream/${id}`];
+  // Local dev convenience: talk to the Flask engine directly if Express doesn't have the route yet.
+  if (STREAM_BASE) sources.push(`${STREAM_BASE}/stream/${id}`);
+  return sources;
+}
+
+/* Legacy: resolve a raw direct stream URL (works only when browser and server share an IP, e.g. local dev).
+ * Flask → /get-audio-url/<video_id> (yt-dlp extracts the direct .m4a stream URL — nothing is downloaded server-side). */
 
 export async function getAudioUrl(videoId: string): Promise<string | null> {
   // 1 · Express API proxy (/api/get-audio-url/:id) — works on deployed site
@@ -202,7 +220,7 @@ export async function getAudioUrl(videoId: string): Promise<string | null> {
 }
 
 /* ---------------- lyrics ----------------
- * Express → /api/lyrics?q= (LRCLIB exact + Genius + cheerio scrape). */
+ * Express → /api/lyrics?q= (LRCLIB exact + NetEase + JioSaavn + lyrics.ovh + Genius). */
 
 export async function getLyrics(track: Track): Promise<LyricsResult> {
   try {
@@ -212,19 +230,22 @@ export async function getLyrics(track: Track): Promise<LyricsResult> {
       artist: track.artist || "",
       channel: track.channel || "",
       duration: String(track.duration || 0),
+      videoId: track.id || "",
     });
     const res = await fetch(`${API_BASE}/api/lyrics?${queryParams.toString()}`, { signal: t.signal });
     t.done();
     if (res.ok) {
       const data = await res.json();
-      if (data.lyrics) {
+      if (data.lyrics || data.syncedLyrics) {
         return {
-          lyrics: data.lyrics,
+          lyrics: data.lyrics || "",
           syncedLyrics: data.syncedLyrics ?? null,
           title: data.title || track.title,
           artist: data.artist || track.artist,
           source: data.source,
           confidence: data.confidence,
+          note: data.note,
+          refDuration: data.refDuration,
         };
       }
     }
