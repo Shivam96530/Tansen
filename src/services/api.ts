@@ -179,6 +179,37 @@ export function getStreamSources(videoId: string): string[] {
   return sources;
 }
 
+/* Ask the stream endpoint WHY it failed (only called after a failure, at most once a minute).
+ * Turns "the audio element errored" into something readable like
+ * "HTTP 502 — no JavaScript runtime found on the server". */
+export async function probeStream(url: string): Promise<string> {
+  try {
+    const t = timeout(45000); // a cold yt-dlp lookup can take a while before it answers
+    const res = await fetch(url, { headers: { Range: "bytes=0-0" }, signal: t.signal });
+    t.done();
+    const type = res.headers.get("content-type") || "";
+    if (type.startsWith("audio")) {
+      void res.body?.cancel();
+      return `HTTP ${res.status}, server sent audio fine (browser couldn't decode it?)`;
+    }
+    if (type.includes("json")) {
+      const j = await res.json();
+      const runtimes = Array.isArray(j?.engine?.js_runtimes) ? j.engine.js_runtimes.join(",") || "NONE" : "?";
+      return [
+        `HTTP ${res.status} ${j?.error ?? ""}`.trim(),
+        j?.hint ? `hint: ${j.hint}` : "",
+        j?.engine ? `server: yt-dlp ${j.engine.yt_dlp_version}, js runtime: ${runtimes}, ejs: ${j.engine.yt_dlp_ejs_installed}` : "",
+        Array.isArray(j?.attempts) && j.attempts[0] ? `first attempt: ${String(j.attempts[0]).slice(0, 180)}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+    return `HTTP ${res.status} ${type || "no content-type"} — got a web page instead of audio, so /api/stream/:id is probably not mounted in Express`;
+  } catch (e) {
+    return `network error: ${(e as Error).message}`;
+  }
+}
+
 /* Legacy: resolve a raw direct stream URL (works only when browser and server share an IP, e.g. local dev).
  * Flask → /get-audio-url/<video_id> (yt-dlp extracts the direct .m4a stream URL — nothing is downloaded server-side). */
 
@@ -220,7 +251,7 @@ export async function getAudioUrl(videoId: string): Promise<string | null> {
 }
 
 /* ---------------- lyrics ----------------
- * Express → /api/lyrics?q= (LRCLIB exact + NetEase + JioSaavn + lyrics.ovh + Genius). */
+ * Express → /api/lyrics?q= (LRCLIB exact + Genius + cheerio scrape). */
 
 export async function getLyrics(track: Track): Promise<LyricsResult> {
   try {

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { directYoutubeSearch } from "../lib/youtubeSearch.js";
 
 const STREAM_BASE = (process.env.STREAM_BASE_URL || "http://localhost:5002").replace(/\/+$/, "");
 
@@ -145,11 +146,7 @@ export async function searchSongs(req, res) {
   for (const q of queriesToTry) {
     let results = [];
     try {
-      const { data } = await axios.get(`${STREAM_BASE}/search`, {
-        params: { q, limit: limit + 5 },
-        timeout: 15000,
-      });
-      results = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
+      results = await directYoutubeSearch(q, limit + 5);
     } catch {
       results = [];
     }

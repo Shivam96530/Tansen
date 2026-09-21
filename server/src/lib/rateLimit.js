@@ -12,24 +12,24 @@ const base = {
 
 export const searchLimiter = rateLimit({
   ...base,
-  max: 30,
+  max: 120,
   windowMs: 60 * 1000,
 });
 
 export const lyricsLimiter = rateLimit({
   ...base,
-  max: 20,
+  max: 60,
   windowMs: 60 * 1000,
 });
 
 export const audioLimiter = rateLimit({
   ...base,
-  max: 30,
+  max: 60,
   windowMs: 60 * 1000,
 });
 
 export const aiLimiter = rateLimit({
   ...base,
-  max: 10,
+  max: 40,
   windowMs: 60 * 1000,
 });

@@ -127,9 +127,24 @@ app.use((err, _req, res, _next) => {
 
 const server = app.listen(PORT, () => {
   console.log(`· API bridge listening on http://localhost:${PORT}`);
-  console.log(`· GET /api/search?q=       → yt-dlp (via stream engine)`);
+  console.log(`· GET /api/search?q=       → direct YouTube InnerTube + scraping (sub-second)`);
   console.log(`· GET /api/lyrics?q=       → Genius + LRCLIB confidence-matched lyrics`);
   console.log(`· POST /api/ai/analyse    → server-side Hugging Face emotion + recommendation intelligence`);
+
+  // Background Keep-Alive: Ping stream engine every 10 minutes to prevent Render free-tier spin down
+  if (STREAM_BASE && !STREAM_BASE.includes("localhost")) {
+    const keepAlive = async () => {
+      try {
+        await axios.get(`${STREAM_BASE}/health`, { timeout: 10000 });
+      } catch {
+        // silent ping failure
+      }
+    };
+    // Initial warm-up ping
+    setTimeout(keepAlive, 3000);
+    // Recurring keep-alive every 10 minutes
+    setInterval(keepAlive, 10 * 60 * 1000);
+  }
 });
 
 function shutdown(sig) {

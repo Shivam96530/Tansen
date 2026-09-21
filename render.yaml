@@ -23,7 +23,7 @@ services:
     runtime: python
     rootDir: python
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 audio_service:app
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120 audio_service:app
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION

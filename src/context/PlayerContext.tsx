@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { getAudioUrl, getLyrics, getRelatedTracks, getStreamSources, searchTracks } from "../services/api";
+import { getLyrics, getRelatedTracks, getStreamSources, probeStream, searchTracks } from "../services/api";
 import { dedupeTracks, songKey } from "../lib/dedupe";
 import type { LyricsResult, Track, ViewKey } from "../types";
 
@@ -24,8 +24,9 @@ type Engine = "audio" | "youtube";
 type StartResult = "playing" | "blocked" | "failed" | "stale";
 
 /** How long we wait for the first audible frame from the stream proxy (yt-dlp can be slow on a cold start). */
-const STREAM_START_TIMEOUT_MS = 20000;
-const DIRECT_START_TIMEOUT_MS = 12000;
+const STREAM_START_TIMEOUT_MS = 25000;
+/** After repeated stream failures, skip straight to the YouTube player for this long. */
+const STREAM_COOLDOWN_MS = 5 * 60 * 1000;
 /** Start fetching the next radio tracks this many seconds before the current one ends. */
 const PREFETCH_WINDOW_SEC = 25;
 
@@ -217,6 +218,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const radioInflight = useRef<Promise<Track[]> | null>(null);
   const extendBusy = useRef(false);
   const prefetchedFor = useRef(-1);
+  const streamHealthRef = useRef({ failures: 0, disabledUntil: 0 });
+  const lastProbeRef = useRef(0);
+
+  /* ---- Debug panel: open the site with ?debug=1 to see which engine plays and why ---- */
+  const [debugEnabled] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "1"
+  );
+  const [debugLines, setDebugLines] = useState<string[]>([]);
+  const note = useCallback(
+    (line: string) => {
+      console.info("[tansen]", line);
+      if (debugEnabled) setDebugLines((l) => [...l.slice(-7), `${new Date().toLocaleTimeString()} ${line}`]);
+    },
+    [debugEnabled]
+  );
 
   const handleEndedRef = useRef<() => void>(() => {});
   const maybePrefetchRef = useRef<(cur: number, dur: number) => void>(() => {});
@@ -751,15 +767,33 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       // Strategy 1: real <audio> element on our own stream proxy (background / lock-screen safe).
       // The first startAudio() call below runs synchronously, before any await.
       const tryAudio = async (): Promise<StartResult> => {
+        const health = streamHealthRef.current;
+        if (Date.now() < health.disabledUntil) {
+          note("stream skipped (failed recently) -> YouTube player");
+          return "failed";
+        }
         for (const src of getStreamSources(track.id)) {
           const result = await startAudio(src, id, STREAM_START_TIMEOUT_MS);
-          if (result !== "failed") return result;
+          if (result === "stale") return "stale";
+          if (result === "playing" || result === "blocked") {
+            health.failures = 0;
+            health.disabledUntil = 0;
+            note(`audio engine OK (${result}) via ${src.replace(/\/[^/]*$/, "/…")}`);
+            return result;
+          }
+          note(`stream failed: ${src.replace(/\/[^/]*$/, "/…")}`);
+          if (Date.now() - lastProbeRef.current > 60000) {
+            lastProbeRef.current = Date.now();
+            void probeStream(src).then((why) => note(`why: ${why}`));
+          }
         }
-        if (loadId.current !== id) return "stale";
-        // Legacy: raw googlevideo URL (only works when the browser shares the server's IP, e.g. local dev).
-        const direct = await getAudioUrl(track.id);
-        if (loadId.current !== id) return "stale";
-        if (direct) return startAudio(direct, id, DIRECT_START_TIMEOUT_MS);
+        // Every source failed. After two strikes stop making the user wait for a server that can't deliver.
+        health.failures += 1;
+        if (health.failures >= 2) {
+          health.disabledUntil = Date.now() + STREAM_COOLDOWN_MS;
+          health.failures = 1; // one more failure after the cooldown re-triggers it immediately
+          note("stream paused for 5 min");
+        }
         return "failed";
       };
 
@@ -792,6 +826,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       engineRef.current = "youtube";
       releaseAudio();
+      note("engine = YouTube iframe (Chrome pauses this when the screen locks)");
 
       const playYt = (): boolean => {
         const p = ytPlayerRef.current;
@@ -824,7 +859,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         }
       }, 600);
     },
-    [applyPlaying, releaseAudio, startAudio, stopYouTube]
+    [applyPlaying, note, releaseAudio, startAudio, stopYouTube]
   );
 
   const dismissTrack = useCallback(() => {
@@ -1251,5 +1286,31 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     ]
   );
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={value}>
+      {children}
+      {debugEnabled && (
+        <pre
+          style={{
+            position: "fixed",
+            left: 4,
+            right: 4,
+            bottom: 4,
+            zIndex: 99999,
+            margin: 0,
+            padding: 8,
+            maxHeight: "40vh",
+            overflow: "auto",
+            background: "rgba(0,0,0,0.88)",
+            color: "#9f9",
+            font: "11px/1.4 monospace",
+            whiteSpace: "pre-wrap",
+            pointerEvents: "none",
+          }}
+        >
+          {debugLines.join("\n") || "debug on - play a song"}
+        </pre>
+      )}
+    </Ctx.Provider>
+  );
 }

@@ -6,18 +6,21 @@ Audio search & direct-stream resolution via yt-dlp, lyrics via Genius.
 
 Endpoints
 ---------
-GET /health                        → service heartbeat
+GET /health                        → service heartbeat & engine diagnostics
 GET /search?q=<query>&limit=<n>    → deduplicated results, up to 8 distinct songs (default)
 GET /stream/<video_id>             → audio bytes, proxied from YouTube with HTTP Range support
                                      (this is what the browser's <audio> element plays)
 GET /get-audio-url/<video_id>      → direct .m4a stream URL (legacy; IP-locked to this server)
 GET /lyrics?query=<query>          → cleaned lyrics text via lyricsgenius
+GET /subtitles/<video_id>          → frame-accurate synced LRC captions from YouTube
 
 Port: 5002
 """
 
+import importlib.util
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -177,7 +180,6 @@ SEARCH_OPTS = {
 }
 
 
-
 # ---------------------------------------------------------------- helpers
 
 def _pick_audio_url(info: dict) -> str | None:
@@ -199,23 +201,102 @@ def _pick_audio_url(info: dict) -> str | None:
     return info.get("url")
 
 
-def _extractor_strategies() -> list[dict]:
-    """yt-dlp option sets tried in order until one yields a playable format."""
-    base = {
-        "quiet": True,
-        "no_warnings": True,
+# ── JavaScript runtime for YouTube (required by current yt-dlp) ──────────────
+# Since yt-dlp 2025.11 YouTube extraction needs an external JavaScript runtime
+# (Deno by default; Node or Bun also work) plus the yt-dlp-ejs solver package.
+# Without them yt-dlp returns few or no playable formats, /stream fails, and the
+# player silently falls back to the YouTube iframe — which mobile Chrome pauses
+# the moment the screen locks.
+#   requirements.txt →  yt-dlp[default]   (bundles yt-dlp-ejs)
+#                       deno              (PyPI wheel that ships the Deno binary)
+
+def _find_binary(name: str) -> str | None:
+    found = shutil.which(name)
+    if found:
+        return found
+    bin_dir = os.path.dirname(sys.executable)  # pip installs console scripts next to python
+    for candidate in (name, f"{name}.exe"):
+        path = os.path.join(bin_dir, candidate)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def _detect_js_runtimes() -> dict:
+    runtimes = {}
+    for name in ("deno", "node", "bun"):
+        path = _find_binary(name)
+        if path:
+            runtimes[name] = {"path": path}
+    return runtimes
+
+
+_JS_RUNTIMES = _detect_js_runtimes()
+_EJS_INSTALLED = importlib.util.find_spec("yt_dlp_ejs") is not None
+# Opt-in only: lets yt-dlp download its solver script from GitHub when yt-dlp-ejs isn't installed.
+_ALLOW_REMOTE_COMPONENTS = os.environ.get("YTDLP_ALLOW_REMOTE_COMPONENTS", "").lower() in ("1", "true", "yes")
+
+
+def _engine_diagnostics() -> dict:
+    """Facts that explain why YouTube extraction works or doesn't on this machine."""
+    return {
+        "yt_dlp_version": getattr(yt_dlp.version, "__version__", "unknown"),
+        "js_runtimes": sorted(_JS_RUNTIMES.keys()),
+        "yt_dlp_ejs_installed": _EJS_INSTALLED,
+        "cookies_configured": bool(_COOKIE_INFO.get("configured")),
+    }
+
+
+class _YtdlpLog:
+    """Collects yt-dlp warnings/errors so a failure can be explained instead of guessed."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+        self.errors: list[str] = []
+
+    def debug(self, msg) -> None:
+        pass
+
+    def info(self, msg) -> None:
+        pass
+
+    def warning(self, msg) -> None:
+        self.warnings.append(str(msg))
+
+    def error(self, msg) -> None:
+        self.errors.append(str(msg))
+
+
+def _extractor_strategies() -> list[tuple[str, dict]]:
+    """(label, yt-dlp options) pairs tried in order until one yields a playable audio format."""
+    base: dict = {
         "noplaylist": True,
         "skip_download": True,
         "format": "bestaudio/best",
+        "ignore_no_formats_error": True,  # hand us the raw format list even if yt-dlp's own pick fails
+        "socket_timeout": 15,
+        "retries": 1,
+        **_cookie_opts(),
     }
-    return [
-        # Strategy 1: Default yt-dlp client chain with cookies (web with cookies)
-        {**base, **_cookie_opts()},
-        # Strategy 2: Android + Web client fallback
-        {**base, "extractor_args": {"youtube": {"player_client": ["android", "web"]}}, **_cookie_opts()},
-        # Strategy 3: Web-only
-        {**base, "extractor_args": {"youtube": {"player_client": ["web"]}}, **_cookie_opts()},
+    if _JS_RUNTIMES:
+        base["js_runtimes"] = _JS_RUNTIMES
+    if _ALLOW_REMOTE_COMPONENTS:
+        base["remote_components"] = ["ejs:github"]
+
+    clients: list[tuple[str, list[str] | None]] = [
+        ("default", None),                      # yt-dlp's own, always-current client chain
+        ("tv+web_safari", ["tv", "web_safari"]),
+        ("android_vr", ["android_vr"]),
+        ("ios", ["ios"]),
+        ("web", ["web"]),
     ]
+    strategies = []
+    for label, player_clients in clients:
+        opts = dict(base)
+        if player_clients:
+            opts["extractor_args"] = {"youtube": {"player_client": player_clients}}
+        strategies.append((label, opts))
+    return strategies
 
 
 _NOISE_WORDS = (
@@ -269,11 +350,13 @@ _MIME_BY_EXT = {"m4a": "audio/mp4", "mp4": "audio/mp4", "webm": "audio/webm", "o
 _STREAM_TTL_SEC = 25 * 60       # googlevideo links live for hours; refresh well before that
 _STREAM_CACHE_MAX = 200
 _STREAM_CACHE: dict[str, dict] = {}
-_RESOLVE_LOCKS: dict[str, threading.Lock] = {}   # one lock per video → concurrent requests share one lookup
 _CACHE_LOCK = threading.Lock()
+_RESOLVE_LOCKS: dict[str, threading.Lock] = {}   # one lock per video → concurrent requests share one lookup
 
 _SUB_CACHE: dict[str, dict] = {}
 _SUB_LOCK = threading.Lock()
+
+_RESOLVE_BUDGET_SEC = 30  # stop trying further strategies after this long
 
 
 def _extract_lrc_from_info(info: dict) -> dict | None:
@@ -284,7 +367,6 @@ def _extract_lrc_from_info(info: dict) -> dict | None:
     auto = info.get("automatic_captions") or {}
 
     target_url = None
-    # 1. Prefer manual subtitles in priority languages (en, hi, regional)
     for lang in ("en", "hi", "en-IN", "hi-Latn", "ur", "pa", "es", "fr", "de"):
         if lang in subs:
             for s in subs[lang]:
@@ -294,7 +376,6 @@ def _extract_lrc_from_info(info: dict) -> dict | None:
             if target_url:
                 break
 
-    # 2. Check any other manual subtitle
     if not target_url and subs:
         for lang, slist in subs.items():
             for s in slist:
@@ -304,7 +385,6 @@ def _extract_lrc_from_info(info: dict) -> dict | None:
             if target_url:
                 break
 
-    # 3. Fallback to speech-recognition auto-captions
     if not target_url and auto:
         for lang in ("en", "hi", "en-IN", "hi-Latn"):
             if lang in auto:
@@ -341,17 +421,41 @@ def _extract_lrc_from_info(info: dict) -> dict | None:
         return None
 
 
-def _cache_subtitles_for_info(video_id: str, info: dict):
-    try:
-        res = _extract_lrc_from_info(info)
-        with _SUB_LOCK:
-            _SUB_CACHE[video_id] = res or {}
-    except Exception:
-        pass
-
-
 class StreamResolveError(Exception):
     """yt-dlp could not produce a playable audio stream."""
+
+    def __init__(self, message: str, attempts: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.attempts = attempts or []
+
+
+def _short(text: object, limit: int = 220) -> str:
+    return re.sub(r"\s+", " ", str(text)).strip()[:limit]
+
+
+def _hint_for(exc: "StreamResolveError") -> str:
+    """Turn a resolution failure into the most likely fix, in plain words."""
+    blob = " ".join(exc.attempts).lower()
+    if not _JS_RUNTIMES:
+        return ("No JavaScript runtime (Deno/Node/Bun) was found on this server. "
+                "Add 'deno' to requirements.txt (or install Node.js) and redeploy.")
+    if not _EJS_INSTALLED and not _ALLOW_REMOTE_COMPONENTS:
+        return ("The yt-dlp-ejs package is missing. Use 'yt-dlp[default]' in requirements.txt, "
+                "or set YTDLP_ALLOW_REMOTE_COMPONENTS=1.")
+    if "not a bot" in blob or "sign in to confirm" in blob or "confirm you" in blob:
+        return ("YouTube is treating this server's IP as a bot. Fresh cookies (YOUTUBE_COOKIES) can help; "
+                "cloud/datacenter IPs are often blocked regardless.")
+    return "Update yt-dlp: pip install -U 'yt-dlp[default]'  (YouTube changes often)."
+
+
+def _resolve_error_response(exc: "StreamResolveError"):
+    return jsonify(
+        error="Stream resolution failed",
+        detail=_short(exc, 300),
+        attempts=exc.attempts,
+        hint=_hint_for(exc),
+        engine=_engine_diagnostics(),
+    ), 502
 
 
 def _pick_audio_stream(info: dict) -> dict | None:
@@ -417,6 +521,13 @@ def _cache_put(video_id: str, entry: dict) -> None:
                     _RESOLVE_LOCKS.pop(key, None)
 
 
+def _log_tail(log: "_YtdlpLog") -> str:
+    """First couple of yt-dlp warnings, e.g. 'No supported JavaScript runtime could be found'."""
+    if not log.warnings:
+        return ""
+    return " [" + " | ".join(_short(w, 160) for w in log.warnings[:2]) + "]"
+
+
 def _resolve_stream(video_id: str, stale_url: str | None = None) -> dict:
     """
     Return {"url", "ext", "headers", "expires"} for a video, using the cache when possible.
@@ -434,28 +545,33 @@ def _resolve_stream(video_id: str, stale_url: str | None = None) -> dict:
             return cached
 
         page_url = f"https://www.youtube.com/watch?v={video_id}"
-        last_exc: Exception | None = None
-        for opts in _extractor_strategies():
+        started = time.time()
+        attempts: list[str] = []
+        for label, opts in _extractor_strategies():
+            if time.time() - started > _RESOLVE_BUDGET_SEC:
+                attempts.append(f"{label}: skipped (time budget used up)")
+                break
+            log = _YtdlpLog()
             try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
+                with yt_dlp.YoutubeDL({**opts, "logger": log}) as ydl:
                     info = ydl.extract_info(page_url, download=False)
                 stream = _pick_audio_stream(info) if info else None
-                if not stream:
-                    continue
-                expires = time.time() + _STREAM_TTL_SEC
-                upstream_expiry = _url_expiry(stream["url"])
-                if upstream_expiry:
-                    expires = min(expires, upstream_expiry - 120)
-                stream["expires"] = expires
-                _cache_put(video_id, stream)
-                return stream
+                if stream:
+                    expires = time.time() + _STREAM_TTL_SEC
+                    upstream_expiry = _url_expiry(stream["url"])
+                    if upstream_expiry:
+                        expires = min(expires, upstream_expiry - 120)
+                    stream["expires"] = expires
+                    _cache_put(video_id, stream)
+                    return stream
+                seen = len((info or {}).get("formats") or [])
+                attempts.append(f"{label}: no playable audio format ({seen} formats seen)" + _log_tail(log))
             except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                continue
+                attempts.append(f"{label}: {_short(exc)}" + _log_tail(log))
 
         with _CACHE_LOCK:
             _STREAM_CACHE.pop(video_id, None)
-        raise StreamResolveError(str(last_exc) if last_exc else "no playable audio stream found")
+        raise StreamResolveError("no playable audio stream found", attempts)
 
 
 def _open_upstream(stream: dict, range_header: str | None):
@@ -481,6 +597,7 @@ def health():
         service="stream-engine",
         port=PORT,
         cookies_configured=bool(_COOKIE_INFO.get("configured")),
+        engine=_engine_diagnostics(),
     )
 
 
@@ -528,7 +645,8 @@ def search():
                 break
         return jsonify(source="youtube", query=query, results=results)
     except Exception as exc:  # noqa: BLE001
-        return jsonify(error="Search failed", detail=str(exc)), 502
+        # Keep Render fix: return empty results instead of crashing with 502
+        return jsonify(source="youtube", query=query, results=[], note="stream-search-fallback", error=str(exc)), 200
 
 
 @app.route("/stream/<video_id>", methods=["GET", "HEAD"])
@@ -546,7 +664,7 @@ def stream_audio(video_id: str):
     try:
         stream = _resolve_stream(video_id)
     except StreamResolveError as exc:
-        return jsonify(error="Stream resolution failed", detail=str(exc)), 502
+        return _resolve_error_response(exc)
 
     upstream = None
     for attempt in range(2):
@@ -563,7 +681,7 @@ def stream_audio(video_id: str):
                     stream = _resolve_stream(video_id, stale_url=stream["url"])
                     continue
                 except StreamResolveError as inner:
-                    return jsonify(error="Stream resolution failed", detail=str(inner)), 502
+                    return _resolve_error_response(inner)
             return jsonify(error="Upstream refused the stream", upstream_status=exc.code), 502
         except Exception as exc:  # noqa: BLE001  (timeouts, DNS, connection resets)
             return jsonify(error="Upstream unreachable", detail=str(exc)), 502
@@ -610,9 +728,9 @@ def get_audio_url(video_id: str):
 
     # Multi-strategy extraction with automatic fallback
     last_exc = None
-    for opts in _extractor_strategies():
+    for _label, opts in _extractor_strategies():
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            with yt_dlp.YoutubeDL({**opts, "logger": _YtdlpLog()}) as ydl:
                 info = ydl.extract_info(page_url, download=False)
             if not info:
                 continue
@@ -699,6 +817,10 @@ def subtitles(video_id: str):
 
 if __name__ == "__main__":
     print(f"- Stream engine on http://localhost:{PORT}")
+    print(f"- yt-dlp {_engine_diagnostics()['yt_dlp_version']} | JS runtimes: {', '.join(_JS_RUNTIMES) or 'NONE'} | yt-dlp-ejs: {_EJS_INSTALLED}")
+    if not _JS_RUNTIMES:
+        print("! WARNING: no JavaScript runtime found. YouTube extraction will fail or return no formats.")
+        print("!          Add 'deno' (pip) or Node.js to this server. See /health for details.")
     print("- GET /search?q=&limit=     -> deduplicated results (default 8)")
     print("- GET /stream/<id>          -> proxied audio bytes (Range supported)")
     print("- GET /get-audio-url/<id>   -> direct .m4a stream URL (legacy)")

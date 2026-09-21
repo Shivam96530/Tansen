@@ -1,4 +1,5 @@
 import axios from "axios";
+import { directYoutubeSearch } from "../lib/youtubeSearch.js";
 
 const HF_CHAT_URL = "https://router.huggingface.co/v1/chat/completions";
 const GENIUS_API = "https://api.genius.com";
@@ -96,21 +97,8 @@ function replyForMood(mood, trackCount = 0) {
 
 async function searchYoutube(query, limit = 8) {
   try {
-    const { data } = await axios.get(`${STREAM_BASE}/search`, {
-      params: { q: query, limit },
-      timeout: 15000,
-    });
-    const items = Array.isArray(data?.results) ? data.results : [];
-    return items.map((raw) => ({
-      id: String(raw.id || raw.videoId || ""),
-      title: String(raw.title || "").trim(),
-      artist: String(raw.artist || raw.uploader || raw.channel || "Unknown artist").trim(),
-      thumbnail:
-        raw.thumbnail ||
-        (raw.id || raw.videoId ? `https://i.ytimg.com/vi/${raw.id || raw.videoId}/hqdefault.jpg` : null),
-      duration: Number(raw.duration || 0),
-      source: "youtube",
-    })).filter((t) => t.id && t.title);
+    const items = await directYoutubeSearch(query, limit);
+    return items.filter((t) => t.id && t.title);
   } catch {
     return [];
   }
